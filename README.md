@@ -297,9 +297,24 @@ matplotlib==3.10.6
 2. PyTorch CUDA versiyonunu kontrol edin
 3. CPU'da çalıştırın (otomatik fallback)
 
-## 📝 Lisans
+## � Lisans
 
+Bu proje **MIT License** altında lisanslanmıştır. Detaylar için [LICENSE](LICENSE) dosyasına bakın.
+
+### MIT License ile yapabilecekleriniz:
+
+- ✅ **Ticari kullanım** - Ticari projelerde kullanabilirsiniz
+- ✅ **Değiştirme** - Kodu değiştirebilirsiniz
+- ✅ **Dağıtım** - Paylaşabilirsiniz
+- ✅ **Özel kullanım** - Kendi projelerinizde kullanabilirsiniz
+- ✅ **Patent kullanımı** - Patent haklarını kullanabilirsiniz
+
+**Tek şart:** Lisans ve telif hakkı bildirimini koruyun.
+
+```
+Copyright (c) 2025 Kadir
 MIT License
+```
 
 ## 👤 İletişim
 
