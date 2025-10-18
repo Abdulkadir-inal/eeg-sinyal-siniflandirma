@@ -3,6 +3,11 @@
 """
 Canlı MindWave Verisi ile Gerçek Zamanlı EEG Sınıflandırma
 WSL2 üzerinden Windows proxy sunucusu ile MindWave cihazını okur
+
+GÜNCELLEME (18 Ekim 2025):
+- 3 sınıf desteği eklendi: aşağı, yukarı, durgun
+- "durgun" sınıfı: START/END işaretleri dışındaki bölgelerden öğrenildi
+- Belirsiz tahminler için otomatik "durgun" sınıflandırması
 """
 
 import sys
@@ -23,11 +28,11 @@ from train_model import CNN_LSTM_Model
 class RealtimeMindWaveClassifier:
     """Canlı MindWave verisi ile gerçek zamanlı sınıflandırma"""
     
-    def __init__(self, window_size=128, host='10.255.255.254', port=5555):
+    def __init__(self, window_size=128, host='172.20.16.1', port=5555):
         """
         Args:
             window_size: Model için gerekli pencere boyutu (varsayılan: 128)
-            host: Windows proxy IP adresi
+            host: Windows proxy IP adresi (WSL2 default gateway)
             port: TCP port numarası
         """
         self.window_size = window_size
@@ -152,7 +157,10 @@ class RealtimeMindWaveClassifier:
         return predicted_class, confidence, probs[0].cpu().numpy()
     
     def print_prediction(self, predicted_class, confidence, all_probs):
-        """Tahmin sonucunu görsel olarak yazdır"""
+        """
+        Tahmin sonucunu görsel olarak yazdır
+        GÜNCELLEME: 3 sınıf desteği (aşağı, yukarı, durgun)
+        """
         class_name = self.reverse_label_map[predicted_class]
         
         # İstatistikleri güncelle
@@ -161,12 +169,20 @@ class RealtimeMindWaveClassifier:
         
         timestamp = datetime.now().strftime("%H:%M:%S")
         
+        # Sınıfa göre emoji seç
+        class_emoji = {
+            'asagı': '⬇️',
+            'yukarı': '⬆️',
+            'durgun': '💤'
+        }
+        emoji = class_emoji.get(class_name, '🎯')
+        
         print("\n" + "="*60)
         print(f"⏰ {timestamp} | Tahmin #{self.total_predictions}")
-        print(f"🎯 Sonuç: {class_name.upper()} ({confidence*100:.2f}%)")
+        print(f"{emoji} Sonuç: {class_name.upper()} ({confidence*100:.2f}%)")
         print("-"*60)
         
-        # Tüm sınıfların olasılıklarını göster
+        # Tüm sınıfların olasılıklarını göster (GÜNCELLEME: Renkli bar'lar)
         for class_idx in sorted(self.reverse_label_map.keys()):
             name = self.reverse_label_map[class_idx]
             prob = all_probs[class_idx]
@@ -174,7 +190,17 @@ class RealtimeMindWaveClassifier:
             # Progress bar
             bar_length = 30
             filled = int(bar_length * prob)
-            bar = "█" * filled + "░" * (bar_length - filled)
+            
+            # Sınıfa göre renk seç (ANSI renk kodları)
+            colors = {
+                'asagı': '\033[94m',   # Mavi
+                'yukarı': '\033[92m',  # Yeşil
+                'durgun': '\033[90m'   # Gri
+            }
+            color = colors.get(name, '\033[0m')
+            reset = '\033[0m'
+            
+            bar = color + "█" * filled + reset + "░" * (bar_length - filled)
             
             marker = "👉" if class_idx == predicted_class else "  "
             print(f"{marker} {name:10s}: {bar} {prob*100:5.2f}%")
@@ -211,7 +237,7 @@ class RealtimeMindWaveClassifier:
             print("1. Windows'ta proxy sunucusu çalışıyor mu?")
             print("   → python windows_proxy.py")
             print("2. MindWave cihazı açık ve bilgisayara bağlı mı?")
-            print("3. IP adresi doğru mu? (Varsayılan: 10.255.255.254)")
+            print("3. IP adresi doğru mu? (WSL2 gateway IP'sini kontrol edin)")
             return
         
         print("\n✅ MindWave bağlantısı başarılı!")
@@ -276,8 +302,8 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Canlı MindWave EEG Sınıflandırma')
-    parser.add_argument('--host', type=str, default='10.255.255.254',
-                        help='Windows proxy IP adresi (varsayılan: 10.255.255.254)')
+    parser.add_argument('--host', type=str, default='172.20.16.1',
+                        help='Windows proxy IP adresi (varsayılan: 172.20.16.1 - WSL2 gateway)')
     parser.add_argument('--port', type=int, default=5555,
                         help='TCP port (varsayılan: 5555)')
     parser.add_argument('--interval', type=float, default=1.0,
