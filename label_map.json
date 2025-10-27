@@ -1,5 +1,6 @@
 {
-  "asagı": 0,
+  "aşağı": 0,
   "yukarı": 1,
-  "durgun": 2
+  "araba": 2,
+  "boş": 3
 }
