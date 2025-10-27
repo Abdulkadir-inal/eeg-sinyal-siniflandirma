@@ -145,18 +145,18 @@ def create_windows(segment):
         windows.append(window)
     return np.array(windows)
 
-def process_all_data(csv_files, include_idle=True):
+def process_all_data(csv_files, include_idle=False):
     """
-    Tüm CSV dosyalarını işle - 4 sınıf sistemi (araba, yukarı, aşağı, boş)
+    Tüm CSV dosyalarını işle - 3 sınıf sistemi (araba, yukarı, aşağı)
     
     Args:
         csv_files: (filename, DataFrame, class_name) tuple'larının listesi
-        include_idle: Boş sınıfını dahil et (varsayılan: True)
+        include_idle: Boş sınıfını dahil et (varsayılan: False - BOŞ SINIFI YOK)
     
     Returns:
         X: Özellik matrisi (N, 128, 9)
         y: Etiketler (N,)
-        label_map: {'araba': 0, 'yukarı': 1, 'aşağı': 2, 'boş': 3}
+        label_map: {'araba': 0, 'yukarı': 1, 'aşağı': 2}
     """
     all_windows = []
     all_labels = []
@@ -274,7 +274,7 @@ def save_data(X, y, label_map):
 
 def main():
     print("\n" + "="*60)
-    print("🧠 EEG VERI ÖN İŞLEME - 4 SINIF SİSTEMİ")
+    print("🧠 EEG VERI ÖN İŞLEME - 3 SINIF SİSTEMİ (BOŞ SINIFI YOK)")
     print("="*60)
     print("📂 Veri dizinleri:")
     for d in DATA_DIRS:
@@ -283,12 +283,16 @@ def main():
         else:
             print(f"   ⚠️  {d} (bulunamadı)")
     
+    print("\n⚠️  NOT: Boş sınıfı DAHIL EDİLMEYECEK!")
+    print("   → Sadece aktif komutlar: araba, yukarı, aşağı")
+    print("   → Boş bölgeler atlanacak")
+    
     csv_files = load_csv_files(DATA_DIRS)
     if not csv_files:
         print("\n❌ CSV dosyası bulunamadı!")
         return
     
-    X, y, label_map = process_all_data(csv_files, include_idle=True)
+    X, y, label_map = process_all_data(csv_files, include_idle=False)
     if X is None:
         print("\n❌ Veri işleme başarısız!")
         return
