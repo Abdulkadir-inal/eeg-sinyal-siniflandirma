@@ -1,0 +1,34 @@
+======================================================================
+TRANSFORMER MODEL - DATA AUGMENTATION VERSION
+======================================================================
+
+Tarih: 2025-11-26 01:47:38
+Device: cuda
+Model: Transformer (d_model=64, nhead=4, layers=2)
+Toplam Parametreler: 109,315
+
+Data Augmentation: AKTIF
+- Gaussian Noise
+- Time Shift (±5 steps)
+- Amplitude Scale (0.9-1.1x)
+- Channel Dropout (10%)
+- Augmentation Probability: 60%
+
+Veri:
+- Train: 14079 samples
+- Validation: 2012 samples
+- Test: 4023 samples
+
+Hiperparametreler:
+- Batch Size: 32
+- Epochs: 50
+- Learning Rate: 0.001
+- Optimizer: AdamW (weight_decay=0.01)
+- Scheduler: ReduceLROnPlateau
+
+Sonuçlar:
+- En İyi Validation Accuracy: 73.56%
+- Test Accuracy: 72.26%
+- Toplam Eğitim Süresi: 296.09 saniye (4.93 dakika)
+
+======================================================================

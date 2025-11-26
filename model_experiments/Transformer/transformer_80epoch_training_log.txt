@@ -1,0 +1,32 @@
+======================================================================
+TRANSFORMER MODEL - 80 EPOCH VERSION
+======================================================================
+
+Tarih: 2025-11-26 01:59:10
+Device: cuda
+Model: Transformer (d_model=64, nhead=4, layers=2)
+Toplam Parametreler: 109,315
+
+Veri:
+- Train: 14079 samples
+- Validation: 2012 samples
+- Test: 4023 samples
+
+Hiperparametreler:
+- Batch Size: 32
+- Epochs: 80 (50'den artırıldı)
+- Learning Rate: 0.001
+- Optimizer: AdamW (weight_decay=0.01)
+- Scheduler: ReduceLROnPlateau (patience=7)
+
+Karşılaştırma:
+- 50 Epoch Sonucu: 86.23% validation, 86.25% test
+- 80 Epoch Sonucu: 88.32% validation, 87.99% test
+- İyileşme: +1.74%
+
+Sonuçlar:
+- En İyi Validation Accuracy: 88.32%
+- Test Accuracy: 87.99%
+- Toplam Eğitim Süresi: 272.96 saniye (4.55 dakika)
+
+======================================================================
