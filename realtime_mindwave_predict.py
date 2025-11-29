@@ -28,7 +28,7 @@ from train_model import CNN_LSTM_Model
 class RealtimeMindWaveClassifier:
     """Canlı MindWave verisi ile gerçek zamanlı sınıflandırma"""
     
-    def __init__(self, window_size=128, host='172.20.16.1', port=5555):
+    def __init__(self, window_size=128, host='172.31.240.1', port=5555):
         """
         Args:
             window_size: Model için gerekli pencere boyutu (varsayılan: 128)
