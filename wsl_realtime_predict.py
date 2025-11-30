@@ -365,6 +365,12 @@ class RealtimePredictor:
     
     LABELS = ['araba', 'yukarı', 'aşağı']
     
+    # Eğitim verisinden hesaplanan StandardScaler parametreleri
+    SCALER_MEAN = [51.84, 451729.19, 100606.08, 29922.44, 30237.58, 
+                   19389.26, 16738.54, 9701.50, 4930.83]
+    SCALER_STD = [209.64, 564932.61, 150896.39, 42604.21, 42522.26,
+                  33606.18, 31252.04, 17717.86, 10128.90]
+    
     def __init__(self, window_size=128):
         self.window_size = window_size
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -439,14 +445,13 @@ class RealtimePredictor:
             return False
     
     def preprocess(self, data_window):
-        """Veriyi model için hazırla (GPU'ya taşı)"""
+        """Veriyi model için hazırla - StandardScaler normalizasyonu (GPU'ya taşı)"""
         x = np.array(data_window, dtype=np.float32)
         
+        # StandardScaler normalizasyonu: (x - mean) / std
+        # Eğitim verisiyle AYNI normalizasyon kullanılmalı!
         for i in range(x.shape[1]):
-            col = x[:, i]
-            min_val, max_val = col.min(), col.max()
-            if max_val - min_val > 0:
-                x[:, i] = (col - min_val) / (max_val - min_val)
+            x[:, i] = (x[:, i] - self.SCALER_MEAN[i]) / self.SCALER_STD[i]
         
         x = torch.FloatTensor(x).unsqueeze(0).to(self.device)
         return x

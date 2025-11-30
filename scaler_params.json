@@ -1,0 +1,35 @@
+{
+  "mean": {
+    "Electrode": 51.84223680444764,
+    "Delta": 451729.1851202184,
+    "Theta": 100606.08495359939,
+    "Low Alpha": 29922.442151097293,
+    "High Alpha": 30237.575858822205,
+    "Low Beta": 19389.264375357747,
+    "High Beta": 16738.54237290071,
+    "Low Gamma": 9701.503787936452,
+    "Mid Gamma": 4930.828246215488
+  },
+  "std": {
+    "Electrode": 209.63761394594835,
+    "Delta": 564932.6125515216,
+    "Theta": 150896.3885176702,
+    "Low Alpha": 42604.213149276104,
+    "High Alpha": 42522.257362237564,
+    "Low Beta": 33606.18086206678,
+    "High Beta": 31252.04267330397,
+    "Low Gamma": 17717.862298590597,
+    "Mid Gamma": 10128.90405990788
+  },
+  "feature_names": [
+    "Electrode",
+    "Delta",
+    "Theta",
+    "Low Alpha",
+    "High Alpha",
+    "Low Beta",
+    "High Beta",
+    "Low Gamma",
+    "Mid Gamma"
+  ]
+}
