@@ -371,6 +371,9 @@ class RealtimePredictor:
     SCALER_STD = [209.64, 564932.61, 150896.39, 42604.21, 42522.26,
                   33606.18, 31252.04, 17717.86, 10128.90]
     
+    # Confidence threshold - bu değerin altındaki tahminler "belirsiz" sayılır
+    CONFIDENCE_THRESHOLD = 0.70  # %70
+    
     def __init__(self, window_size=128):
         self.window_size = window_size
         self.device = torch.device('cpu')
@@ -382,6 +385,7 @@ class RealtimePredictor:
         # İstatistikler
         self.predictions = {label: 0 for label in self.LABELS}
         self.total_predictions = 0
+        self.uncertain_count = 0  # Belirsiz tahmin sayısı
     
     def select_model(self):
         """Model seçimi"""
@@ -530,21 +534,38 @@ class RealtimePredictor:
                         label, confidence = self.predict(data_window)
                         
                         if label:
-                            self.predictions[label] += 1
-                            self.total_predictions += 1
-                            
                             print()
                             print("\n" + "=" * 60)
-                            print(f"⏰ {datetime.now().strftime('%H:%M:%S')} | Tahmin #{self.total_predictions}")
-                            print(f"🎯 Sonuç: {label.upper()} ({confidence*100:.1f}%)")
+                            
+                            # Confidence threshold kontrolü
+                            if confidence >= self.CONFIDENCE_THRESHOLD:
+                                # Güvenilir tahmin
+                                self.predictions[label] += 1
+                                self.total_predictions += 1
+                                
+                                print(f"⏰ {datetime.now().strftime('%H:%M:%S')} | Tahmin #{self.total_predictions}")
+                                print(f"🎯 Sonuç: {label.upper()} ({confidence*100:.1f}%)")
+                            else:
+                                # Belirsiz tahmin - threshold altında
+                                self.uncertain_count += 1
+                                
+                                print(f"⏰ {datetime.now().strftime('%H:%M:%S')} | ❓ Belirsiz #{self.uncertain_count}")
+                                print(f"🤔 Tahmin: {label.upper()} ama güven düşük ({confidence*100:.1f}% < {self.CONFIDENCE_THRESHOLD*100:.0f}%)")
+                            
                             print("-" * 60)
                             
+                            # Tüm olasılıkları göster
                             for l in self.LABELS:
                                 count = self.predictions[l]
-                                pct = (count / self.total_predictions * 100) if self.total_predictions > 0 else 0
+                                total = self.total_predictions if self.total_predictions > 0 else 1
+                                pct = (count / total * 100)
                                 bar = "█" * int(pct / 5)
-                                marker = "👉" if l == label else "  "
+                                marker = "👉" if (l == label and confidence >= self.CONFIDENCE_THRESHOLD) else "  "
                                 print(f"{marker} {l:8} : {bar:<20} {pct:.1f}% ({count})")
+                            
+                            # Belirsiz sayısını da göster
+                            if self.uncertain_count > 0:
+                                print(f"   {'belirsiz':8} : {'░' * int(self.uncertain_count / max(self.total_predictions,1) * 20):<20} ({self.uncertain_count})")
                             
                             print("=" * 60)
                 
