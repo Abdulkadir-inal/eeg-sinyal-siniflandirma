@@ -509,8 +509,9 @@ class RealtimePredictor:
         
         try:
             last_prediction_time = 0
-            prediction_interval = 0.5  # 0.5 saniyede bir tahmin (hızlı!)
+            prediction_interval = 0.3  # 0.3 saniyede bir tahmin (çok hızlı!)
             eeg_received = False
+            prediction_started = False  # Tahmin başladı mı?
             
             while True:
                 result = self.thinkgear.read_data()
@@ -520,14 +521,16 @@ class RealtimePredictor:
                     eeg_vector = self.thinkgear.get_eeg_vector()
                     self.buffer.append(eeg_vector)
                     
-                    poor = self.thinkgear.last_data['poorSignalLevel']
-                    signal_status = "✅" if poor < 50 else f"⚠️({poor})"
-                    
-                    print(f"\r📦 {len(self.buffer)}/{self.window_size} | Sinyal: {signal_status}   ", end='')
+                    # Sadece tahmin başlamadan önce buffer durumunu göster
+                    if not prediction_started:
+                        poor = self.thinkgear.last_data['poorSignalLevel']
+                        signal_status = "✅" if poor < 50 else f"⚠️({poor})"
+                        print(f"\r📦 {len(self.buffer)}/{self.window_size} | Sinyal: {signal_status}   ", end='')
                     
                     current_time = time.time()
                     if len(self.buffer) >= self.window_size and (current_time - last_prediction_time) >= prediction_interval:
                         last_prediction_time = current_time
+                        prediction_started = True  # Artık tahminler başladı
                         
                         data_window = list(self.buffer)[-self.window_size:]
                         label, confidence, inference_time = self.predict(data_window)

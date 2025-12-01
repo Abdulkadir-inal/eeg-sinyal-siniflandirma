@@ -497,8 +497,9 @@ class RealtimePredictor:
         
         try:
             last_prediction_time = 0
-            prediction_interval = 1.0
+            prediction_interval = 0.3  # 0.3 saniyede bir tahmin (hızlı!)
             eeg_received = False
+            prediction_started = False  # Tahmin başladı mı?
             
             while True:
                 # Veri oku
@@ -510,24 +511,26 @@ class RealtimePredictor:
                     eeg_vector = self.thinkgear.get_eeg_vector()
                     self.buffer.append(eeg_vector)
                     
-                    # Sinyal durumu
-                    poor = self.thinkgear.last_data['poorSignalLevel']
-                    if poor == 0:
-                        signal_status = "✅ Mükemmel"
-                    elif poor < 50:
-                        signal_status = f"⚠️ Orta ({poor})"
-                    else:
-                        signal_status = f"❌ Zayıf ({poor})"
-                    
-                    attention = self.thinkgear.last_data['attention']
-                    meditation = self.thinkgear.last_data['meditation']
-                    
-                    print(f"\r📦 Buffer: {len(self.buffer)}/{self.window_size} | Sinyal: {signal_status} | Dikkat: {attention} | Meditasyon: {meditation}   ", end='')
+                    # Sadece tahmin başlamadan önce buffer durumunu göster
+                    if not prediction_started:
+                        poor = self.thinkgear.last_data['poorSignalLevel']
+                        if poor == 0:
+                            signal_status = "✅ Mükemmel"
+                        elif poor < 50:
+                            signal_status = f"⚠️ Orta ({poor})"
+                        else:
+                            signal_status = f"❌ Zayıf ({poor})"
+                        
+                        attention = self.thinkgear.last_data['attention']
+                        meditation = self.thinkgear.last_data['meditation']
+                        
+                        print(f"\r📦 Buffer: {len(self.buffer)}/{self.window_size} | Sinyal: {signal_status} | Dikkat: {attention} | Meditasyon: {meditation}   ", end='')
                     
                     # Yeterli veri var mı?
                     current_time = time.time()
                     if len(self.buffer) >= self.window_size and (current_time - last_prediction_time) >= prediction_interval:
                         last_prediction_time = current_time
+                        prediction_started = True  # Artık tahminler başladı
                         
                         # Tahmin yap
                         data_window = list(self.buffer)[-self.window_size:]
