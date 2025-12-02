@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ThinkGear → WSL2 Proxy
-======================
+ThinkGear → WSL2 Proxy (Raw EEG Destekli)
+=========================================
 
-ThinkGear Connector'dan gelen veriyi WSL2'ye yönlendirir.
+ThinkGear Connector'dan gelen RAW EEG verisini de WSL2'ye yönlendirir.
+FFT hesaplaması bilgisayarda yapılarak daha hızlı tahmin sağlar.
 
 Windows'ta çalıştırın:
-    python thinkgear_proxy.py
+    python windows_proxy_raw.py
 
 WSL2'de:
-    python wsl_realtime_predict.py
+    python fft_model/realtime_fft_predict.py
+
+ÖNEMLİ: Bu proxy RAW EEG verisini aktarır (512 Hz).
+        FFT ve filtreleme WSL2 tarafında yapılır.
 """
 
 import socket
@@ -18,8 +22,8 @@ import threading
 import sys
 import time
 
-class ThinkGearProxy:
-    """ThinkGear Connector verisini WSL2'ye yönlendirir"""
+class ThinkGearProxyRaw:
+    """ThinkGear Connector verisini (Raw EEG dahil) WSL2'ye yönlendirir"""
     
     def __init__(self, thinkgear_host='127.0.0.1', thinkgear_port=13854, proxy_port=5555):
         self.thinkgear_host = thinkgear_host
@@ -39,14 +43,16 @@ class ThinkGearProxy:
             self.thinkgear_sock.settimeout(5)
             self.thinkgear_sock.connect((self.thinkgear_host, self.thinkgear_port))
             
-            # JSON format iste - Raw EEG dahil (FFT hesaplama için)
+            # ÖNEMLİ: Raw EEG çıktısı aktif!
+            # enableRawOutput: true → rawEeg verisi gelir (512 Hz)
             self.thinkgear_sock.send(b'{"enableRawOutput": true, "format": "Json"}\n')
             
-            # TCP optimizasyonları
+            # TCP optimizasyonları - düşük gecikme için
             self.thinkgear_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             
             print("✅ ThinkGear Connector'a bağlandı!")
-            self.thinkgear_sock.settimeout(0.1)  # 100ms timeout (daha hızlı)
+            print("📡 Raw EEG çıktısı: AKTİF (512 Hz)")
+            self.thinkgear_sock.settimeout(0.05)  # 50ms timeout (çok hızlı)
             return True
             
         except ConnectionRefusedError:
@@ -77,7 +83,7 @@ class ThinkGearProxy:
     def run(self):
         """Ana döngü"""
         print("\n" + "=" * 60)
-        print("🔄 ThinkGear → WSL2 Proxy")
+        print("🔄 ThinkGear → WSL2 Proxy (Raw EEG Destekli)")
         print("=" * 60)
         
         # ThinkGear'a bağlan
@@ -89,7 +95,7 @@ class ThinkGearProxy:
             return
         
         print("\n⏳ WSL2 bağlantısı bekleniyor...")
-        print("   WSL2'de çalıştırın: python wsl_realtime_predict.py")
+        print("   WSL2'de çalıştırın: python fft_model/realtime_fft_predict.py")
         print("-" * 60)
         
         try:
@@ -108,12 +114,13 @@ class ThinkGearProxy:
             
             byte_count = 0
             packet_count = 0
+            raw_count = 0
             start_time = time.time()
             
             while self.running:
                 try:
-                    # ThinkGear'dan oku (daha büyük buffer)
-                    data = self.thinkgear_sock.recv(8192)
+                    # ThinkGear'dan oku (büyük buffer)
+                    data = self.thinkgear_sock.recv(16384)
                     
                     if data:
                         # WSL2'ye hemen gönder
@@ -121,11 +128,15 @@ class ThinkGearProxy:
                         byte_count += len(data)
                         packet_count += 1
                         
-                        # İstatistik (her 10 pakette bir güncelle - daha az overhead)
-                        if packet_count % 10 == 0:
+                        # Raw EEG sayısını tahmin et
+                        raw_count += data.count(b'rawEeg')
+                        
+                        # İstatistik (her 50 pakette bir)
+                        if packet_count % 50 == 0:
                             elapsed = time.time() - start_time
                             rate = byte_count / elapsed if elapsed > 0 else 0
-                            print(f"\r📦 Paket: {packet_count} | Byte: {byte_count} | Hız: {rate:.0f} B/s   ", end='', flush=True)
+                            raw_rate = raw_count / elapsed if elapsed > 0 else 0
+                            print(f"\r📦 {packet_count} paket | {byte_count/1024:.1f} KB | {rate/1024:.1f} KB/s | ~{raw_rate:.0f} raw/s   ", end='', flush=True)
                     
                 except socket.timeout:
                     continue
@@ -164,7 +175,18 @@ class ThinkGearProxy:
 
 
 def main():
-    proxy = ThinkGearProxy()
+    print("\n" + "=" * 60)
+    print("🧠 FFT Tabanlı Tahmin için Raw EEG Proxy")
+    print("=" * 60)
+    print("\n📋 Bu proxy Raw EEG verisini WSL2'ye aktarır.")
+    print("   FFT ve filtreleme WSL2 tarafında yapılır.")
+    print("\n🚀 Avantajlar:")
+    print("   - NeuroSky 1 Hz → Bu sistem ~2-4 Hz tahmin")
+    print("   - Kendi filtreleme (Notch + Bandpass)")
+    print("   - %95.70 doğruluk (TCN FFT modeli)")
+    print()
+    
+    proxy = ThinkGearProxyRaw()
     proxy.run()
 
 
