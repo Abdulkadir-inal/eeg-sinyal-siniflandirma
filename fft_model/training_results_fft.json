@@ -2,22 +2,22 @@
   "models": [
     {
       "name": "CNN-LSTM",
-      "val_accuracy": 50.26190766232184,
-      "elapsed_time": 252.04959845542908
+      "val_accuracy": 81.56853043047997,
+      "elapsed_time": 133.17487239837646
     },
     {
       "name": "TCN",
-      "val_accuracy": 60.14130832013644,
-      "elapsed_time": 379.503915309906
+      "val_accuracy": 95.69520039584364,
+      "elapsed_time": 185.0989649295807
     },
     {
       "name": "Transformer",
-      "val_accuracy": 68.33962723839689,
-      "elapsed_time": 375.1576976776123
+      "val_accuracy": 93.49332013854527,
+      "elapsed_time": 170.93856167793274
     }
   ],
-  "best_model": "Transformer",
-  "best_accuracy": 68.33962723839689,
+  "best_model": "TCN",
+  "best_accuracy": 95.69520039584364,
   "data_source": "FFT (Raw EEG -> FFT bands)",
   "epochs": 50,
   "batch_size": 32

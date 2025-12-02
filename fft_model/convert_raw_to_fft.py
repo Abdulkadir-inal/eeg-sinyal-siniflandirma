@@ -6,9 +6,13 @@ Bu script mevcut CSV dosyalarındaki Electrode (Raw EEG) sütununu okur,
 FFT ile frekans bantlarını hesaplar ve NeuroSky gibi her 512 sample'a
 aynı bant değerlerini yazar.
 
+ÖNEMLİ: Event Id sütunundaki START (33025) ve END (33024) işaretleri
+korunur, böylece data_preprocess sadece aktif bölgeleri kullanabilir.
+
 Böylece:
 - Satır sayısı korunur (512 Hz)
 - Model yapısı değişmez
+- Event işaretleri korunur
 - Sadece bant değerleri bizim FFT hesabımızdan gelir
 
 Kullanım:
@@ -33,6 +37,10 @@ OUTPUT_DIR = SCRIPT_DIR / "data"  # ./data (fft_model/data)
 SAMPLING_RATE = 512  # Hz
 WINDOW_SIZE = 512    # 1 saniyelik pencere (512 sample) - FFT için
 # Her 512 sample için 1 FFT hesapla, sonucu 512 satıra yaz (NeuroSky gibi)
+
+# Event işaretleri
+START_EVENT = 33025
+END_EVENT = 33024
 
 # NeuroSky frekans bantları (Hz)
 FREQUENCY_BANDS = {
@@ -81,6 +89,7 @@ def calculate_band_powers(raw_samples):
 def process_csv_file(input_path, output_path):
     """
     Tek bir CSV dosyasını işle - NeuroSky tarzı (512 satıra aynı değer)
+    Event Id sütununu koruyarak aktif bölgelerin işaretlenmesini sağla
     """
     print(f"  İşleniyor: {input_path.name}")
     
@@ -95,7 +104,18 @@ def process_csv_file(input_path, output_path):
     raw_eeg = df['Electrode'].values
     total_samples = len(raw_eeg)
     
-    print(f"    Toplam sample: {total_samples} ({total_samples/SAMPLING_RATE:.1f} saniye)")
+    # Event Id sütununu kontrol et ve koru
+    has_events = 'Event Id' in df.columns
+    if has_events:
+        event_ids = df['Event Id'].values
+        start_count = np.sum(event_ids == START_EVENT)
+        end_count = np.sum(event_ids == END_EVENT)
+        print(f"    Toplam sample: {total_samples} ({total_samples/SAMPLING_RATE:.1f} saniye)")
+        print(f"    Event işaretleri: {start_count} START, {end_count} END")
+    else:
+        event_ids = None
+        print(f"    Toplam sample: {total_samples} ({total_samples/SAMPLING_RATE:.1f} saniye)")
+        print(f"    ⚠ Event Id sütunu yok")
     
     # Sonuç dizileri - orijinal boyutta
     result_bands = {band: np.zeros(total_samples) for band in FREQUENCY_BANDS.keys()}
@@ -126,15 +146,21 @@ def process_csv_file(input_path, output_path):
             for band_name, power in band_powers.items():
                 result_bands[band_name][remaining_start:total_samples] = power
     
-    # Yeni DataFrame oluştur
+    # Yeni DataFrame oluştur - Event Id dahil
     new_df = pd.DataFrame({
         'Electrode': result_electrode,
         **result_bands
     })
     
+    # Event Id sütununu ekle (varsa)
+    if has_events:
+        new_df['Event Id'] = event_ids
+    
     # Sütun sırasını ayarla
     columns = ['Electrode', 'Delta', 'Theta', 'Low Alpha', 'High Alpha', 
                'Low Beta', 'High Beta', 'Low Gamma', 'Mid Gamma']
+    if has_events:
+        columns.append('Event Id')
     new_df = new_df[columns]
     
     # Çıktı dizinini oluştur

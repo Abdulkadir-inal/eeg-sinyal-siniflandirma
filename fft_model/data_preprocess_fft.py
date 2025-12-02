@@ -6,7 +6,10 @@ FFT Tabanlı Veri Ön İşleme
 Bu script, Raw EEG'den FFT ile hesaplanmış bant değerlerini kullanarak
 model eğitimi için veri hazırlar.
 
-Veri kaynağı: proje_verisi_manuel/ (convert_raw_to_fft.py çıktısı)
+ÖNEMLİ: Event Id sütunundaki START (33025) ve END (33024) işaretleri
+kullanılarak sadece aktif (düşünme) bölgeleri alınır.
+
+Veri kaynağı: ./data/ (convert_raw_to_fft.py çıktısı)
 Çıktı: X_fft.npy, y_fft.npy, label_map_fft.json
 """
 
@@ -20,7 +23,10 @@ from pathlib import Path
 
 # Veri dizinleri
 SCRIPT_DIR = Path(__file__).parent
-DATA_DIR = SCRIPT_DIR / "data"  # fft_model/data
+# Filtrelenmiş veri varsa onu kullan, yoksa normal veriyi
+DATA_DIR_FILTERED = SCRIPT_DIR / "data_filtered"
+DATA_DIR_NORMAL = SCRIPT_DIR / "data"
+DATA_DIR = DATA_DIR_FILTERED if DATA_DIR_FILTERED.exists() else DATA_DIR_NORMAL
 OUTPUT_DIR = SCRIPT_DIR  # fft_model/
 
 # EEG özellikleri (FFT ile hesaplanmış)
@@ -31,10 +37,14 @@ EEG_FEATURES = ["Electrode", "Delta", "Theta", "Low Alpha", "High Alpha",
 WINDOW_SIZE = 128  # Orijinal modelle aynı
 OVERLAP = 64       # %50 overlap
 
+# Event işaretleri
+START_EVENT = 33025
+END_EVENT = 33024
+
 
 def load_csv_files():
     """
-    proje_verisi_manuel klasöründeki tüm CSV dosyalarını yükle
+    fft_model/data klasöründeki tüm CSV dosyalarını yükle
     """
     csv_files = []
     
@@ -65,11 +75,59 @@ def load_csv_files():
     return csv_files
 
 
+def extract_active_segments(df):
+    """
+    Event Id sütunundaki START/END işaretlerini kullanarak
+    sadece aktif (düşünme) bölgelerini çıkar
+    
+    Returns:
+        list of DataFrames: Aktif segmentler
+    """
+    active_segments = []
+    
+    if 'Event Id' not in df.columns:
+        # Event Id yoksa tüm veriyi döndür (eski davranış)
+        print("      ⚠ Event Id sütunu yok, tüm veri kullanılacak")
+        return [df]
+    
+    # Event Id'leri sayısal değerlere çevir (NaN'ları 0 yap)
+    event_ids = pd.to_numeric(df['Event Id'], errors='coerce').fillna(0).astype(int)
+    
+    # Başlangıç ve bitiş indekslerini bul
+    start_indices = df.index[event_ids == START_EVENT].tolist()
+    end_indices = df.index[event_ids == END_EVENT].tolist()
+    
+    if not start_indices:
+        print("      ⚠ START işareti bulunamadı, tüm veri kullanılacak")
+        return [df]
+    
+    print(f"      📍 {len(start_indices)} START, {len(end_indices)} END işareti bulundu")
+    
+    # Her START için en yakın END'i bul
+    for start_idx in start_indices:
+        # Bu START'tan sonraki END'leri bul
+        valid_ends = [end for end in end_indices if end > start_idx]
+        if valid_ends:
+            end_idx = valid_ends[0]
+            # START ve END arasındaki veriyi al
+            segment = df.iloc[start_idx:end_idx+1].copy()
+            if len(segment) > WINDOW_SIZE:
+                active_segments.append(segment)
+                print(f"      ✅ Aktif segment: {len(segment)} satır ({len(segment)/512:.1f}s)")
+    
+    if not active_segments:
+        print("      ⚠ Aktif segment bulunamadı")
+    
+    return active_segments
+
+
 def create_windows(df):
     """
     DataFrame'den sliding window'lar oluştur
     """
-    data = df[EEG_FEATURES].values
+    # Sadece EEG özelliklerini al
+    available_features = [f for f in EEG_FEATURES if f in df.columns]
+    data = df[available_features].values
     data = np.nan_to_num(data, nan=0.0)
     
     windows = []
@@ -84,7 +142,7 @@ def create_windows(df):
 
 def process_all_data(csv_files):
     """
-    Tüm CSV dosyalarını işle
+    Tüm CSV dosyalarını işle - sadece aktif bölgeleri kullan
     """
     all_windows = []
     all_labels = []
@@ -92,6 +150,8 @@ def process_all_data(csv_files):
     current_label = 0
     
     for filename, df, class_name in csv_files:
+        print(f"\n   📂 {filename} işleniyor...")
+        
         # Sınıf etiketini ata
         if class_name not in label_map:
             label_map[class_name] = current_label
@@ -99,13 +159,20 @@ def process_all_data(csv_files):
         
         label = label_map[class_name]
         
-        # Pencereler oluştur
-        windows = create_windows(df)
+        # Aktif segmentleri çıkar
+        active_segments = extract_active_segments(df)
         
-        if len(windows) > 0:
-            all_windows.append(windows)
-            all_labels.extend([label] * len(windows))
-            print(f"   📊 {filename}: {len(windows)} pencere → etiket {label} ({class_name})")
+        # Her segment için pencereler oluştur
+        total_windows = 0
+        for segment in active_segments:
+            windows = create_windows(segment)
+            if len(windows) > 0:
+                all_windows.append(windows)
+                all_labels.extend([label] * len(windows))
+                total_windows += len(windows)
+        
+        if total_windows > 0:
+            print(f"      📊 Toplam: {total_windows} pencere → etiket {label} ({class_name})")
     
     if all_windows:
         X = np.vstack(all_windows)
