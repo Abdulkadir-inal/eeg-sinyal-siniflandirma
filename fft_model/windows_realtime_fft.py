@@ -7,6 +7,17 @@
 MindWave'den Raw EEG alır, filtreleme ve FFT'yi bilgisayarda
 hesaplayarak hızlı tahmin yapar.
 
+⚠️ BİLİNEN SORUNLAR:
+- Canlı tahmin performansı offline test sonuçlarından düşük
+- Model sınıflar arası geçişlerde zorlanıyor
+
+🔧 TODO: KALİBRASYON SİSTEMİ EKLENMELİ
+Scaler uyumsuzluğu çözümü için:
+1. Program başında 10-30 sn kalibrasyon
+2. Kullanıcının nötr/dinlenme durumu ölçülecek  
+3. Kişiye özel mean/std hesaplanacak
+4. Eğitim scaler'ına oranlanarak adaptif normalizasyon
+
 NeuroSky EEG Power: 1 Hz (saniyede 1 tahmin)
 Bu sistem: ~2-4 Hz (saniyede 2-4 tahmin)
 
