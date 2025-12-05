@@ -18,6 +18,101 @@ Scaler uyumsuzluğu çözümü için:
 3. Kişiye özel mean/std hesaplanacak
 4. Eğitim scaler'ına oranlanarak adaptif normalizasyon
 
+🔧 TODO: TRANSFER LEARNING (Kişiye Özel Model)
+Daha iyi bireysel tahmin için:
+1. Karma model (tüm kullanıcılar) ile temel EEG örüntüleri öğretilmiş
+2. Son katmanlar dondurulup, sadece son katmanlar yeniden eğitilecek
+3. Sadece hedef kullanıcının verisi (örn: apo_*.csv) ile fine-tune
+4. Avantajları:
+   - Az veri ile yüksek doğruluk
+   - Kişisel EEG desenlerine uyum
+   - Scaler uyumsuzluğu sorunu azalır
+   
+Uygulama:
+    # Karma modeli yükle
+    model = load_model("karma_model.pth")
+    
+    # Erken katmanları dondur (genel EEG bilgisi korunsun)
+    for param in model.tcn.parameters():
+        param.requires_grad = False
+    
+    # Sadece son FC katmanları eğitilebilir bırak
+    for param in model.fc.parameters():
+        param.requires_grad = True
+    
+    # Kişisel veri ile fine-tune (az epoch yeterli, örn: 10-20)
+    train(model, personal_data, epochs=20, lr=0.0001)
+
+🔧 TODO: TUŞ KONTROLÜ (Start/Stop Tahmin)
+Tahmin yapma zamanlamasını kullanıcı kontrol edebilsin:
+1. pynput kütüphanesi kullanılacak (cross-platform: Windows, Mac, Linux)
+2. Kurulum: pip install pynput
+3. Mac'te Accessibility izni gerekli (System Preferences > Security & Privacy > Accessibility)
+
+Tuş atamaları:
+    - S tuşu → Tahmin başlat (Start)
+    - E tuşu → Tahmin durdur (End)
+    - SPACE  → Toggle (aç/kapat)
+    - Q tuşu → Programdan çık (Quit)
+
+Uygulama:
+    from pynput import keyboard
+    
+    recording = False
+    
+    def on_press(key):
+        global recording
+        try:
+            if key.char == 's':
+                recording = True
+                print("🔴 TAHMİN BAŞLADI")
+            elif key.char == 'e':
+                recording = False
+                print("⏸️ TAHMİN DURAKLATILDI")
+            elif key.char == 'q':
+                return False  # Listener'ı durdur
+        except AttributeError:
+            if key == keyboard.Key.space:
+                recording = not recording
+                print(f"{'🔴 AKTİF' if recording else '⏸️ PASIF'}")
+    
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+    
+    # Ana döngüde:
+    if recording:
+        # Tahmin yap
+        pass
+
+🔧 TODO: DAHA HIZLI TAHMİN İÇİN PENCERE BOYUTU KÜÇÜLTME
+Şu anki model_window = 128 frame → Daha küçük yapılabilir (64, 32)
+
+Avantajları:
+    ✅ Daha hızlı tepki süresi (gecikme azalır)
+    ✅ Daha az veri biriktirme bekleme süresi
+    ✅ Gerçek zamanlı kontrol için daha uygun
+
+Dezavantajları:
+    ❌ Daha az temporal context → Model daha az bilgiyle karar verir
+    ❌ Doğruluk düşebilir (daha az veri = daha az güvenilir patern)
+    ❌ Gürültüye daha hassas (küçük pencere = noise'dan daha çok etkilenir)
+    ❌ MODEL YENİDEN EĞİTİLMELİ! (eğitim ve test aynı pencere boyutunda olmalı)
+
+Uygulama adımları:
+    1. train_model_fft.py'de SEQUENCE_LENGTH değiştir (128 → 64 veya 32)
+    2. Modeli yeniden eğit
+    3. windows_realtime_fft.py'de model_window değiştir
+    4. Test et ve doğruluk karşılaştır
+
+Önerilen deney:
+    | Pencere | Tahmini Gecikme | Beklenen Doğruluk |
+    |---------|-----------------|-------------------|
+    | 128     | ~1-2 sn         | En yüksek (%95)   |
+    | 64      | ~0.5-1 sn       | Orta (%85-90?)    |
+    | 32      | ~0.25-0.5 sn    | Düşük (%75-85?)   |
+
+------------------------------------------------------------------------    
+
 NeuroSky EEG Power: 1 Hz (saniyede 1 tahmin)
 Bu sistem: ~2-4 Hz (saniyede 2-4 tahmin)
 
