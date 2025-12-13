@@ -57,6 +57,17 @@ except ImportError:
     print("⚠️ pynput bulunamadı. Tuş kontrolü devre dışı.")
     print("   Yüklemek için: pip3 install pynput\n")
 
+# Serial Port (direkt bağlantı için)
+try:
+    import serial
+    import serial.tools.list_ports
+    SERIAL_AVAILABLE = True
+    print("✅ pyserial yüklü - Direkt bağlantı kullanılabilir")
+except ImportError:
+    SERIAL_AVAILABLE = False
+    print("⚠️ pyserial bulunamadı. Direkt bağlantı devre dışı.")
+    print("   Yüklemek için: pip3 install pyserial\n")
+
 # SciPy (filtreleme için)
 try:
     from scipy import signal as scipy_signal
@@ -306,96 +317,188 @@ class TCN_Model(nn.Module):
 
 
 # ============================================================================
-# THINKGEAR BAĞLANTISI
+# MİNDWAVE BAĞLANTISI (DİREKT SERİ PORT)
 # ============================================================================
 
-class ThinkGearConnector:
-    """ThinkGear Connector'a bağlanır (macOS uyumlu)"""
+class DirectMindWaveConnector:
+    """MindWave'e direkt seri port üzerinden bağlanır (ThinkGear Connector gerekmez!)"""
     
-    def __init__(self, host='127.0.0.1', port=13854):
-        self.host = host
+    def __init__(self, port=None):
         self.port = port
-        self.sock = None
-        self.buffer = ""
+        self.serial = None
+        self.buffer = bytearray()
         self.raw_buffer = deque(maxlen=FFT_WINDOW_SIZE * 2)
         self.poor_signal = 200
         self.raw_count = 0
     
+    @staticmethod
+    def list_ports():
+        """Kullanılabilir seri portları listele"""
+        if not SERIAL_AVAILABLE:
+            return []
+        
+        ports = []
+        for port in serial.tools.list_ports.comports():
+            # MindWave portlarını filtrele (macOS için tty.* önemli!)
+            if any(keyword in port.description.lower() or keyword in port.device.lower() 
+                   for keyword in ['mindwave', 'neurosky', 'bluetooth', 'rfcomm', 'tty.']):
+                ports.append({
+                    'device': port.device,
+                    'description': port.description,
+                    'hwid': port.hwid
+                })
+        
+        return ports
+    
     def connect(self):
-        """ThinkGear Connector'a bağlan"""
+        """MindWave'e direkt bağlan"""
+        if not SERIAL_AVAILABLE:
+            print("❌ pyserial kurulu değil!")
+            print("   Kurulum: pip3 install pyserial")
+            return False
+        
         try:
-            print(f"🔵 ThinkGear Connector'a bağlanılıyor: {self.host}:{self.port}")
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5)
-            self.sock.connect((self.host, self.port))
+            if self.port is None:
+                print("🔍 Kullanılabilir portlar aranıyor...")
+                ports = self.list_ports()
+                
+                if not ports:
+                    print("❌ MindWave portu bulunamadı!")
+                    print("\n💡 macOS'ta Çözüm:")
+                    print("   1. MindWave'i Bluetooth ile eşleştirin")
+                    print("      System Settings > Bluetooth")
+                    print("   2. Cihazın 'Connected' durumda olduğundan emin olun")
+                    print("   3. Terminal'de port'ları kontrol edin: ls /dev/tty.*")
+                    print("   4. Bu scripti tekrar çalıştırın")
+                    return False
+                
+                if len(ports) == 1:
+                    self.port = ports[0]['device']
+                    print(f"✅ Port bulundu: {self.port}")
+                    print(f"   {ports[0]['description']}")
+                else:
+                    print(f"\n📋 {len(ports)} port bulundu:")
+                    for i, port in enumerate(ports, 1):
+                        print(f"   {i}. {port['device']} - {port['description']}")
+                    
+                    choice = input(f"\nHangi portu kullanmak istersiniz? (1-{len(ports)}): ").strip()
+                    try:
+                        idx = int(choice) - 1
+                        self.port = ports[idx]['device']
+                    except (ValueError, IndexError):
+                        print("❌ Geçersiz seçim!")
+                        return False
             
-            self.sock.send(b'{"enableRawOutput": true, "format": "Json"}\n')
-            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.sock.settimeout(0.05)
+            print(f"\n🔵 MindWave'e bağlanılıyor: {self.port}")
+            self.serial = serial.Serial(
+                port=self.port,
+                baudrate=57600,
+                timeout=0.1,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE
+            )
+            
+            time.sleep(0.5)
+            self.serial.reset_input_buffer()
             
             print("✅ Bağlantı başarılı!")
             print("📡 Raw EEG çıktısı: AKTİF (512 Hz)")
+            print("🎉 ThinkGear Connector gerekmedi!")
             return True
             
-        except ConnectionRefusedError:
-            print("❌ ThinkGear Connector çalışmıyor!")
-            print("\n💡 macOS'ta Çözüm:")
-            print("   1. ThinkGear Connector'ı indirin:")
-            print("      http://developer.neurosky.com/docs/doku.php?id=thinkgear_connector_tgc")
-            print("   2. Uygulamayı açın")
-            print("   3. MindWave'i Bluetooth ile eşleştirin")
-            print("   4. Bu scripti tekrar çalıştırın")
+        except serial.SerialException as e:
+            print(f"❌ Bağlantı hatası: {e}")
+            print("\n💡 Olası Çözümler:")
+            print("   • Port başka bir uygulama tarafından kullanılıyor olabilir")
+            print("   • MindWave'in Bluetooth bağlantısını kontrol edin")
+            print("   • Cihazı kapatıp tekrar açın")
             return False
         except Exception as e:
-            print(f"❌ Bağlantı hatası: {e}")
+            print(f"❌ Beklenmeyen hata: {e}")
             return False
     
     def disconnect(self):
         """Bağlantıyı kapat"""
-        if self.sock:
+        if self.serial and self.serial.is_open:
             try:
-                self.sock.close()
+                self.serial.close()
             except:
                 pass
         print("🔌 Bağlantı kapatıldı")
     
+    def _parse_packet(self):
+        """ThinkGear paketini parse et"""
+        while len(self.buffer) >= 4:
+            if self.buffer[0] != 0xAA or self.buffer[1] != 0xAA:
+                self.buffer.pop(0)
+                continue
+            
+            plength = self.buffer[2]
+            if len(self.buffer) < plength + 4:
+                break
+            
+            payload = self.buffer[3:3+plength]
+            checksum = self.buffer[3+plength]
+            
+            calc_sum = sum(payload) & 0xFF
+            calc_sum = (~calc_sum) & 0xFF
+            
+            if checksum != calc_sum:
+                self.buffer.pop(0)
+                continue
+            
+            i = 0
+            while i < len(payload):
+                code = payload[i]
+                i += 1
+                
+                while code == 0x55 and i < len(payload):
+                    code = payload[i]
+                    i += 1
+                
+                if code >= 0x80:
+                    if i >= len(payload):
+                        break
+                    vlength = payload[i]
+                    i += 1
+                else:
+                    vlength = 1
+                
+                if i + vlength > len(payload):
+                    break
+                
+                value = payload[i:i+vlength]
+                i += vlength
+                
+                if code == 0x80 and len(value) == 2:
+                    raw_value = int.from_bytes(value, byteorder='big', signed=True)
+                    self.raw_buffer.append(raw_value)
+                    self.raw_count += 1
+                elif code == 0x02 and len(value) == 1:
+                    self.poor_signal = value[0]
+            
+            del self.buffer[:3+plength+1]
+    
     def read_data(self):
-        """ThinkGear'dan veri oku"""
-        if not self.sock:
+        """Serial porttan veri oku"""
+        if not self.serial or not self.serial.is_open:
             return None
         
         try:
-            data = self.sock.recv(16384).decode('utf-8')
-            if not data:
-                return None
+            if self.serial.in_waiting > 0:
+                data = self.serial.read(self.serial.in_waiting)
+                self.buffer.extend(data)
             
-            self.buffer += data
-            lines = self.buffer.split('\r')
-            self.buffer = lines[-1]
+            old_count = self.raw_count
+            self._parse_packet()
             
-            got_raw = False
-            for line in lines[:-1]:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                try:
-                    parsed = json.loads(line)
-                    
-                    if 'rawEeg' in parsed:
-                        self.raw_buffer.append(parsed['rawEeg'])
-                        self.raw_count += 1
-                        got_raw = True
-                    
-                    if 'poorSignalLevel' in parsed:
-                        self.poor_signal = parsed['poorSignalLevel']
-                    
-                except json.JSONDecodeError:
-                    continue
+            if self.raw_count > old_count:
+                return 'raw'
             
-            return 'raw' if got_raw else None
+            return None
             
-        except socket.timeout:
+        except serial.SerialException:
             return None
         except Exception:
             return None
@@ -403,10 +506,11 @@ class ThinkGearConnector:
     def get_raw_samples(self, n_samples):
         """Son n sample'ı al"""
         if len(self.raw_buffer) < n_samples:
-            return None
+            return []
         return list(self.raw_buffer)[-n_samples:]
     
     def get_buffer_size(self):
+        """Raw buffer boyutunu döndür"""
         return len(self.raw_buffer)
 
 
@@ -428,7 +532,7 @@ class RealtimeTransformedPredictor:
         self.model = None
         self.signal_processor = SignalProcessor()
         self.fft_buffer = deque(maxlen=model_window)
-        self.thinkgear = ThinkGearConnector()
+        self.mindwave = DirectMindWaveConnector()
         self.scaler = None
         
         self.calibration_mean = None
@@ -581,20 +685,20 @@ class RealtimeTransformedPredictor:
         raw_samples_for_fft = 256
         
         while (time.time() - start_time) < duration:
-            result = self.thinkgear.read_data()
+            result = self.mindwave.read_data()
             
             if result == 'raw':
                 elapsed = time.time() - start_time
                 remaining = duration - elapsed
-                sig = "✅" if self.thinkgear.poor_signal < 50 else f"⚠️({self.thinkgear.poor_signal})"
+                sig = "✅" if self.mindwave.poor_signal < 50 else f"⚠️({self.mindwave.poor_signal})"
                 print(f"\r⏳ Kalan: {remaining:.1f}s | Veri: {len(calibration_data)} | {sig}   ", end='')
                 
-                raw_buffer_size = self.thinkgear.get_buffer_size()
-                new_samples = self.thinkgear.raw_count - last_raw_count
+                raw_buffer_size = self.mindwave.get_buffer_size()
+                new_samples = self.mindwave.raw_count - last_raw_count
                 
                 if raw_buffer_size >= self.fft_window and new_samples >= raw_samples_for_fft:
-                    last_raw_count = self.thinkgear.raw_count
-                    raw_samples = self.thinkgear.get_raw_samples(self.fft_window)
+                    last_raw_count = self.mindwave.raw_count
+                    raw_samples = self.mindwave.get_raw_samples(self.fft_window)
                     band_powers = self.signal_processor.process_raw_to_fft(raw_samples)
                     calibration_data.append([0] + band_powers)
             
@@ -632,7 +736,8 @@ class RealtimeTransformedPredictor:
             return
         
         print("\n" + "-" * 60)
-        if not self.thinkgear.connect():
+        print("📡 Bağlantı Modu: Direkt Serial Port (ThinkGear Connector gerekmez!)")
+        if not self.mindwave.connect():
             return
         
         print("\n" + "=" * 60)
@@ -668,16 +773,16 @@ class RealtimeTransformedPredictor:
         
         try:
             while not self.should_quit:
-                result = self.thinkgear.read_data()
+                result = self.mindwave.read_data()
                 
                 if result == 'raw':
-                    raw_buffer_size = self.thinkgear.get_buffer_size()
-                    new_samples = self.thinkgear.raw_count - last_raw_count
+                    raw_buffer_size = self.mindwave.get_buffer_size()
+                    new_samples = self.mindwave.raw_count - last_raw_count
                     
                     if raw_buffer_size >= self.fft_window and new_samples >= raw_samples_for_fft:
-                        last_raw_count = self.thinkgear.raw_count
+                        last_raw_count = self.mindwave.raw_count
                         
-                        raw_samples = self.thinkgear.get_raw_samples(self.fft_window)
+                        raw_samples = self.mindwave.get_raw_samples(self.fft_window)
                         band_powers = self.signal_processor.process_raw_to_fft(raw_samples)
                         self.fft_buffer.append([0] + band_powers)
                         
@@ -691,7 +796,7 @@ class RealtimeTransformedPredictor:
                                 
                                 if confidence >= self.CONFIDENCE_THRESHOLD:
                                     self.predictions[label] += 1
-                                    sig = "✅" if self.thinkgear.poor_signal < 50 else f"⚠️"
+                                    sig = "✅" if self.mindwave.poor_signal < 50 else f"⚠️"
                                     print(f"\r[{self.total_predictions:4d}] {emoji} {label:8s} | "
                                           f"Güven: {confidence*100:5.1f}% | "
                                           f"{inference_time:.1f}ms | {sig}   ", end='')
@@ -709,7 +814,7 @@ class RealtimeTransformedPredictor:
         except KeyboardInterrupt:
             print("\n\n⏹️ Durduruldu.")
         finally:
-            self.thinkgear.disconnect()
+            self.mindwave.disconnect()
             self.print_stats()
     
     def print_stats(self):
@@ -771,7 +876,7 @@ def main():
     print(f"📂 Model: {MODEL_DIR}")
     
     print("\n📋 Seçenekler:")
-    print("   1. Canlı Tahmin (ThinkGear Connector gerekli)")
+    print("   1. Canlı Tahmin (Direkt Serial Port - ThinkGear Connector GEREKMEZ!)")
     print("   2. Demo Modu (rastgele veri ile test)")
     print("   3. Çıkış")
     
