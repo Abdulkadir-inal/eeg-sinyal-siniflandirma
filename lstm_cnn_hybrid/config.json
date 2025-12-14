@@ -1,0 +1,15 @@
+{
+  "sequence_length": 64,
+  "num_features": 15,
+  "num_classes": 3,
+  "band_names": [
+    "Delta",
+    "Theta",
+    "Low Alpha",
+    "High Alpha",
+    "Low Beta",
+    "High Beta",
+    "Low Gamma",
+    "Mid Gamma"
+  ]
+}
