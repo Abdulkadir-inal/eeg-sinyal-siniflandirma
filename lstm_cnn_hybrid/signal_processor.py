@@ -55,15 +55,25 @@ BAND_NAMES = ['Delta', 'Theta', 'Low Alpha', 'High Alpha',
 # FİLTRE FONKSİYONLARI
 # ============================================================================
 
+# Varsayılan stride (adım) değeri - 512Hz/64 = ~8 FFT/saniye
+DEFAULT_STRIDE = 64
+
+
 class SignalProcessor:
     """
     Gerçek zamanlı sinyal işleme sınıfı.
     Eğitim verilerinde kullanılan aynı filtreleri uygular.
+    
+    Stride mekanizması:
+    - Buffer dolduktan sonra her 'stride' sample'da bir FFT hesaplar
+    - 512Hz / 64 stride = ~8 FFT/saniye (~0.125s aralık)
+    - Bu, LSTM modelinin beklediği zaman adımlarıyla uyumludur
     """
     
-    def __init__(self, sampling_rate=SAMPLING_RATE):
+    def __init__(self, sampling_rate=SAMPLING_RATE, stride=DEFAULT_STRIDE):
         self.fs = sampling_rate
         self.window_size = WINDOW_SIZE
+        self.stride = stride  # Her kaç sample'da bir FFT hesaplanacak
         
         # Filtre katsayılarını önceden hesapla
         self._create_filters()
@@ -80,6 +90,10 @@ class SignalProcessor:
         # İstatistikler
         self.total_samples = 0
         self.artifact_count = 0
+        
+        # Stride sayacı - son FFT'den bu yana kaç sample eklendi
+        self.samples_since_last_fft = 0
+        self.fft_count = 0  # Toplam hesaplanan FFT sayısı
     
     def _create_filters(self):
         """Filtre katsayılarını hesapla"""
@@ -97,19 +111,28 @@ class SignalProcessor:
     def add_sample(self, raw_value):
         """
         Yeni bir raw EEG sample ekle.
-        Buffer dolduğunda otomatik FFT hesaplar.
+        Buffer dolu VE stride kadar sample eklendiyse FFT hesaplar.
         
         Args:
             raw_value: Raw EEG değeri (µV)
         
         Returns:
-            dict or None: FFT bant güçleri (buffer doluysa) veya None
+            dict or None: FFT bant güçleri (koşullar sağlanırsa) veya None
+        
+        Note:
+            - İlk 512 sample boyunca None döner (buffer dolması gerekir)
+            - Buffer dolduktan sonra her 'stride' (varsayılan 64) sample'da
+              bir FFT hesaplar (~8 FFT/saniye)
         """
         self.raw_buffer.append(raw_value)
         self.total_samples += 1
+        self.samples_since_last_fft += 1
         
-        # Buffer doldu mu?
-        if len(self.raw_buffer) >= self.window_size:
+        # Buffer dolu VE stride kadar sample eklendi mi?
+        if len(self.raw_buffer) >= self.window_size and self.samples_since_last_fft >= self.stride:
+            # Sayacı sıfırla
+            self.samples_since_last_fft = 0
+            self.fft_count += 1
             # FFT hesapla ve döndür
             return self.compute_fft()
         
@@ -216,6 +239,8 @@ class SignalProcessor:
         self.last_fft_values = {band: 0.0 for band in BAND_NAMES}
         self.total_samples = 0
         self.artifact_count = 0
+        self.samples_since_last_fft = 0
+        self.fft_count = 0
     
     def is_ready(self):
         """Buffer dolu mu?"""
@@ -231,11 +256,12 @@ class SignalProcessor:
 # ============================================================================
 
 if __name__ == "__main__":
-    print("SignalProcessor Test")
-    print("=" * 50)
+    print("SignalProcessor Test (Stride Mekanizması)")
+    print("=" * 60)
     
-    # Test verisi oluştur (1 saniyelik sinüs dalgası)
-    t = np.linspace(0, 1, SAMPLING_RATE)
+    # Test verisi oluştur (2 saniyelik sinüs dalgası)
+    duration = 2  # saniye
+    t = np.linspace(0, duration, SAMPLING_RATE * duration)
     # 10 Hz Alpha + 20 Hz Beta + 50 Hz noise
     test_signal = (
         50 * np.sin(2 * np.pi * 10 * t) +  # Alpha
@@ -244,17 +270,35 @@ if __name__ == "__main__":
         5 * np.random.randn(len(t))         # Random noise
     )
     
-    processor = SignalProcessor()
+    print(f"Test süresi: {duration} saniye")
+    print(f"Toplam sample: {len(test_signal)}")
+    print(f"Stride: {DEFAULT_STRIDE} sample")
+    print(f"Beklenen FFT sayısı: ~{(len(test_signal) - WINDOW_SIZE) // DEFAULT_STRIDE + 1}")
+    print()
+    
+    processor = SignalProcessor(stride=DEFAULT_STRIDE)
+    fft_times = []  # FFT hesaplandığı sample indexleri
     
     # Sample'ları ekle
     for i, sample in enumerate(test_signal):
         result = processor.add_sample(sample)
         
         if result is not None:
-            print(f"\nFFT hesaplandı ({i+1} sample sonra):")
-            for band, power in result.items():
-                print(f"  {band:12s}: {power:12.2f}")
+            fft_times.append(i)
+            if len(fft_times) <= 3:  # İlk 3 FFT'yi göster
+                print(f"FFT #{len(fft_times)} @ sample {i+1} ({(i+1)/SAMPLING_RATE:.3f}s):")
+                for band, power in list(result.items())[:3]:  # İlk 3 bant
+                    print(f"  {band:12s}: {power:12.2f}")
+                print()
     
-    print(f"\nBuffer durumu: {processor.get_buffer_progress():.1f}%")
-    print(f"Toplam sample: {processor.total_samples}")
-    print(f"Artifact sayısı: {processor.artifact_count}")
+    print("=" * 60)
+    print(f"SONUÇLAR:")
+    print(f"  Toplam sample işlendi: {processor.total_samples}")
+    print(f"  Toplam FFT hesaplandı: {processor.fft_count}")
+    print(f"  FFT/saniye: {processor.fft_count / duration:.1f} (~8 bekleniyor)")
+    print(f"  FFT aralığı: ~{DEFAULT_STRIDE/SAMPLING_RATE*1000:.1f}ms (~125ms bekleniyor)")
+    print(f"  Artifact sayısı: {processor.artifact_count}")
+    
+    if len(fft_times) > 1:
+        intervals = np.diff(fft_times)
+        print(f"  Ortalama FFT aralığı: {np.mean(intervals):.1f} sample ({np.mean(intervals)/SAMPLING_RATE*1000:.1f}ms)")

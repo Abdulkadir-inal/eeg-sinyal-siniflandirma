@@ -1,0 +1,142 @@
+================================================================================
+LSTM+CNN HİBRİT MODEL - DENEY KAYITLARI
+================================================================================
+
+Bu dosya model deneyleri, değişiklikler ve sonuçları kayıt altında tutar.
+Her deney sonrası güncellenir.
+
+================================================================================
+BASELINE MODEL (v1) - Mevcut Durum
+================================================================================
+Tarih: 2024 (önceki çalışma)
+Sequence Length: 64
+Stride: 64 sample (~125ms, ~8 FFT/s)
+Model: SimpleCNN_LSTM
+  - Conv1d(15→32, k=5, p=2) + BN + ReLU + MaxPool(2) + Dropout(0.2)
+  - BiLSTM(32→64, bidirectional=True) → hidden=128
+  - FC(128→64→3)
+Özellikler: 15 (8 bant + 3 toplam + 4 oran)
+Eğitim Parametreleri:
+  - Batch Size: 64
+  - Epochs: 100 (early stop)
+  - Learning Rate: 0.001
+  - Weight Decay: 1e-4
+  - Dropout: 0.4
+  - Early Stop Patience: 15
+Sonuç: Validation Accuracy ~%XX (kontrol edilecek)
+Model Dosyaları:
+  - best_model.pth
+  - final_model.pth
+  - config.json (seq_len=64)
+  - scaler.pkl
+
+================================================================================
+DENEY #0 - Hızlı Görüş Alanı (Sequence Length 32)
+================================================================================
+Tarih: 2024-12-15
+Amaç: Daha kısa pencere ile hızlı tepki sağlamak
+
+Değişiklikler:
+  - sequence_length: 64 → 32 (-50%)
+  - İlk tahmin gecikmesi: 8s → 4s (2x hızlanma)
+  - Daha fazla veri noktası üretildi
+
+Durum: [✅] TAMAMLANDI
+
+--- Sonuçlar (2024-12-15) ---
+Validation Accuracy: 98.95% ✅
+Train Accuracy: 92.46%
+Train-Val Gap: -5.5%
+Epoch Sayısı: 59 (early stopping)
+Veri: 164,198 sequence (X shape: 164198, 32, 15)
+Augmented Train: 525,432 örnek
+
+Gözlemler:
+  - Kısa pencereye rağmen yüksek doğruluk elde edildi
+  - Daha fazla veri = daha iyi genelleme
+  - Hızlı tepki gerektiren uygulamalar için ideal
+
+================================================================================
+DENEY #1 - Arttırılmış Görüş Alanı (Sequence Length 96)
+================================================================================
+Tarih: 2024-12-15
+Amaç: LSTM görüş alanını artırarak daha uzun paternlerin yakalanmasını sağlamak
+
+Durum: [✅] TAMAMLANDI
+
+--- Sonuçlar (2024-12-15 21:56) ---
+Validation Accuracy: 99.17% 🏆
+Train Accuracy: 94.62%
+Train-Val Gap: -4.5%
+Epoch Sayısı: 100 (erken durdurma olmadı)
+Veri: 54,722 sequence (X shape: 54722, 96, 15)
+Augmented Train: 175,108 örnek
+
+Gözlemler:
+  - Mükemmel doğruluk (99.17%)
+  - Negatif gap = iyi genelleme, overfitting yok
+  - Canlı testte seq32 ve seq96 karşılaştırılacak
+
+================================================================================
+DENEY #2 - Daha Uzun Görüş Alanı (Sequence Length 128) [PLANLANDA]
+================================================================================
+Amaç: seq96 başarılı olursa 128 ile test
+
+Beklenti:
+  - İlk tahmin gecikmesi ~16s
+  - Daha uzun temporal bağlam
+  - Muhtemelen seq96'dan biraz daha iyisi olabilir ama gecikme artacak
+
+Notlar:
+  - İsteğe bağlı, şimdilik seq32 ve seq96 yeterli
+
+================================================================================
+DENEY GEÇMİŞİ ÖZETİ
+================================================================================
+| Deney   | Seq Len | Val Acc | Gap   | Durum                     |
+|---------|---------|---------|-------|---------------------------|
+| #0      | 32      | 98.95%  | -5.5% | ✅ Tamamlandı (Hızlı)    |
+| v1      | 64      | -       | -     | Baseline (test edilmemiş) |
+| #1      | 96      | 99.17%  | -4.5% | ✅ Tamamlandı (Doğru)    |
+| #2      | 128     | -       | -     | Planlandı                 |
+
+================================================================================
+NOTLAR ve KULLANıM
+================================================================================
+Model Seçimi:
+  - --model seq32   : Hızlı tepki (~4s), 98.95% doğruluk
+  - --model seq64   : Baseline (~8s)
+  - --model seq96   : En yüksek doğruluk (~12s), 99.17%
+  - --model seq128  : Planlandı
+
+Komutlar:
+  # Modelleri listele
+  python3 realtime_predict.py --list-models
+  python3 realtime_gui.py --list-models
+  
+  # CLI ile test
+  python3 realtime_predict.py --thinkgear --model seq32
+  python3 realtime_predict.py --port /dev/ttyUSB0 --model seq96
+  
+  # GUI ile test
+  python3 realtime_gui.py --simulation --model seq32
+  python3 realtime_gui.py --simulation --model seq96
+  
+  # Yeni model eğit
+  python3 train_experiment.py --seq-len 128
+
+Model Dosyaları:
+  - seq32_best_model.pth + config/scaler/label_map
+  - seq64_best_model.pth + config/scaler/label_map
+  - seq96_best_model.pth + config/scaler/label_map
+  - seq128_best_model.pth + ... (planlandı)
+
+Özellikler:
+  - Tüm modeller SimpleCNN_LSTM mimarisi kullanır
+  - 15 özellik (8 bant + 3 toplam + 4 oran)
+  - Aynı training pipeline (FFT, normalize, augmentation)
+  - Farklı sequence_length'ler karşılaştırma için ideal
+
+================================================================================
+Epoch Sayısı: 59
+Model Dosyası: seq32_best_model.pth

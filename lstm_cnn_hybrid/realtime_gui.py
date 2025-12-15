@@ -10,9 +10,16 @@ MindWave'in kendi FFT'sini DEĞİL, bizim hesapladığımız FFT'yi kullanır.
 Pipeline:
     Raw EEG → Notch (50Hz) → Bandpass (0.5-50Hz) → FFT → Model
 
+Model Seçenekleri:
+    --model seq64   : Baseline model (sequence_length=64)
+    --model seq96   : Genişletilmiş görüş (sequence_length=96)
+    --model seq128  : En geniş görüş (sequence_length=128)
+
 Kullanım:
-    python realtime_gui.py --simulation   (Test için)
-    python realtime_gui.py --port COM5    (Gerçek cihaz)
+    python realtime_gui.py --simulation        (Test için - varsayılan seq64)
+    python realtime_gui.py --simulation --model seq96   (seq96 ile test)
+    python realtime_gui.py --port COM5         (Seri port)
+    python realtime_gui.py --thinkgear --model seq96    (ThinkGear + seq96)
 """
 
 import os
@@ -20,6 +27,7 @@ import sys
 import time
 import json
 import pickle
+import argparse
 import numpy as np
 from collections import deque
 import threading
@@ -54,6 +62,42 @@ COLORS = {
     'aşağı': '#ff6b6b',
     'asagı': '#ff6b6b',
     'araba': '#feca57'
+}
+
+# Model seçenekleri
+AVAILABLE_MODELS = {
+    'seq32': {
+        'name': 'Hızlı (seq32)',
+        'model': 'seq32_best_model.pth',
+        'config': 'seq32_config.json',
+        'scaler': 'seq32_scaler.pkl',
+        'label_map': 'seq32_label_map.json',
+        'description': 'En hızlı tepki, sequence_length=32 (~4s gecikme)'
+    },
+    'seq64': {
+        'name': 'Baseline (seq64)',
+        'model': 'best_model.pth',
+        'config': 'config.json',
+        'scaler': 'scaler.pkl',
+        'label_map': 'label_map.json',
+        'description': 'Varsayılan model, sequence_length=64'
+    },
+    'seq96': {
+        'name': 'Genişletilmiş (seq96)',
+        'model': 'seq96_best_model.pth',
+        'config': 'seq96_config.json',
+        'scaler': 'seq96_scaler.pkl',
+        'label_map': 'seq96_label_map.json',
+        'description': 'Daha geniş görüş alanı, sequence_length=96'
+    },
+    'seq128': {
+        'name': 'En Geniş (seq128)',
+        'model': 'seq128_best_model.pth',
+        'config': 'seq128_config.json',
+        'scaler': 'seq128_scaler.pkl',
+        'label_map': 'seq128_label_map.json',
+        'description': 'En geniş görüş alanı, sequence_length=128'
+    }
 }
 
 
@@ -184,11 +228,12 @@ class SimulatedMindWave:
 class PredictionEngine:
     """Raw EEG'den FFT hesaplar ve model ile tahmin yapar"""
     
-    def __init__(self, model_path, scaler_path, config_path):
+    def __init__(self, model_path, scaler_path, config_path, label_map_path=None):
         with open(config_path, 'r') as f:
             self.config = json.load(f)
         
-        label_map_path = os.path.join(os.path.dirname(config_path), 'label_map.json')
+        if label_map_path is None:
+            label_map_path = os.path.join(os.path.dirname(config_path), 'label_map.json')
         with open(label_map_path, 'r', encoding='utf-8') as f:
             self.label_map = json.load(f)
         
@@ -319,15 +364,18 @@ class PredictionEngine:
 # ============================================================================
 
 class RealtimeGUI:
-    def __init__(self, root, use_simulation=False, port=None):
+    def __init__(self, root, use_simulation=False, port=None, use_thinkgear=False, model_name='seq64'):
         self.root = root
         self.root.title("🧠 LSTM+CNN Canlı Tahmin (Raw → FFT)")
         self.root.geometry("1200x800")
         self.root.configure(bg=COLORS['bg'])
         
         self.use_simulation = use_simulation
+        self.use_thinkgear = use_thinkgear
         self.port = port
+        self.model_name = model_name  # Seçilen model
         self.running = False
+        self.monitoring = False  # Sinyal izleme modu
         self.connector = None
         self.engine = None
         
@@ -343,36 +391,37 @@ class RealtimeGUI:
         top_frame.pack(fill=tk.X, padx=10, pady=10)
         top_frame.pack_propagate(False)
         
-        # Pipeline bilgisi
-        tk.Label(top_frame, text="Pipeline: Raw EEG → Filtre → FFT → Model",
+        # Model bilgisi
+        model_info = AVAILABLE_MODELS.get(self.model_name, AVAILABLE_MODELS['seq64'])
+        tk.Label(top_frame, text=f"Model: {model_info['name']} | Pipeline: Raw EEG → Filtre → FFT → Model",
                 bg=COLORS['panel'], fg='#888', font=('Segoe UI', 9)).pack(pady=(5,0))
         
         self.pred_label = tk.Label(top_frame, text="⏳ Bekleniyor...",
-                                   font=('Segoe UI', 48, 'bold'),
+                                   font=('Segoe UI', 32, 'bold'),
                                    bg=COLORS['panel'], fg='white')
-        self.pred_label.pack(pady=10)
+        self.pred_label.pack(pady=5)
         
         # Güven barları
         self.conf_frame = tk.Frame(top_frame, bg=COLORS['panel'])
-        self.conf_frame.pack(fill=tk.X, padx=50)
+        self.conf_frame.pack(fill=tk.X, padx=20, pady=5)
         
         self.conf_bars = {}
         for class_name in ['yukarı', 'asagı', 'araba']:
             frame = tk.Frame(self.conf_frame, bg=COLORS['panel'])
-            frame.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=10)
+            frame.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
             
             display_name = class_name.upper()
             color = COLORS.get(class_name, 'white')
             tk.Label(frame, text=display_name, bg=COLORS['panel'],
-                    fg=color, font=('Segoe UI', 12, 'bold')).pack()
+                    fg=color, font=('Segoe UI', 10, 'bold')).pack()
             
-            bar = ttk.Progressbar(frame, length=150, mode='determinate')
-            bar.pack(pady=5)
+            bar = ttk.Progressbar(frame, length=120, mode='determinate')
+            bar.pack(pady=3)
             self.conf_bars[class_name] = bar
             
             pct_label = tk.Label(frame, text="0%", bg=COLORS['panel'],
-                                fg='white', font=('Segoe UI', 10))
-            pct_label.pack()
+                                fg='white', font=('Segoe UI', 9))
+            pct_label.pack(pady=1)
             self.conf_bars[f"{class_name}_label"] = pct_label
         
         # Orta - Grafikler
@@ -399,13 +448,31 @@ class RealtimeGUI:
         bottom_frame.pack(fill=tk.X, padx=10, pady=10)
         bottom_frame.pack_propagate(False)
         
-        # Başlat butonu
+        # BAĞLAN butonu (Aşama 1)
+        self.btn_connect = tk.Button(bottom_frame, text="🔌 BAĞLAN",
+                                     font=('Segoe UI', 12, 'bold'),
+                                     bg='#3498db', fg='white',
+                                     width=10, height=1,
+                                     command=self.connect_device)
+        self.btn_connect.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # BAŞLAT butonu (Aşama 2)
         self.btn_start = tk.Button(bottom_frame, text="▶️ BAŞLAT",
-                                   font=('Segoe UI', 14, 'bold'),
-                                   bg='#2ecc71', fg='white',
-                                   width=15, height=2,
-                                   command=self.toggle_prediction)
-        self.btn_start.pack(side=tk.LEFT, padx=20, pady=10)
+                                   font=('Segoe UI', 12, 'bold'),
+                                   bg='#95a5a6', fg='white',
+                                   width=10, height=1,
+                                   state=tk.DISABLED,
+                                   command=self.start_prediction)
+        self.btn_start.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # DURDUR butonu
+        self.btn_stop = tk.Button(bottom_frame, text="⏹️ DURDUR",
+                                  font=('Segoe UI', 12, 'bold'),
+                                  bg='#95a5a6', fg='white',
+                                  width=10, height=1,
+                                  state=tk.DISABLED,
+                                  command=self.stop_prediction)
+        self.btn_stop.pack(side=tk.LEFT, padx=5, pady=5)
         
         # Mod seçimi
         mode_frame = tk.Frame(bottom_frame, bg=COLORS['panel'])
@@ -414,14 +481,26 @@ class RealtimeGUI:
         tk.Label(mode_frame, text="Mod:", bg=COLORS['panel'],
                 fg='white', font=('Segoe UI', 11)).pack(side=tk.LEFT)
         
-        self.mode_var = tk.StringVar(value='simulation' if self.use_simulation else 'real')
+        # Varsayılan mod seç
+        if self.use_simulation:
+            default_mode = 'simulation'
+        elif self.use_thinkgear:
+            default_mode = 'thinkgear'
+        else:
+            default_mode = 'thinkgear'  # ThinkGear varsayılan
+        
+        self.mode_var = tk.StringVar(value=default_mode)
         
         tk.Radiobutton(mode_frame, text="Simülasyon", variable=self.mode_var,
                       value='simulation', bg=COLORS['panel'], fg='white',
                       selectcolor=COLORS['bg'], font=('Segoe UI', 10)).pack(side=tk.LEFT, padx=5)
         
-        tk.Radiobutton(mode_frame, text="Gerçek Cihaz", variable=self.mode_var,
-                      value='real', bg=COLORS['panel'], fg='white',
+        tk.Radiobutton(mode_frame, text="ThinkGear", variable=self.mode_var,
+                      value='thinkgear', bg=COLORS['panel'], fg='white',
+                      selectcolor=COLORS['bg'], font=('Segoe UI', 10)).pack(side=tk.LEFT, padx=5)
+        
+        tk.Radiobutton(mode_frame, text="Seri Port", variable=self.mode_var,
+                      value='serial', bg=COLORS['panel'], fg='white',
                       selectcolor=COLORS['bg'], font=('Segoe UI', 10)).pack(side=tk.LEFT, padx=5)
         
         # Port
@@ -455,38 +534,65 @@ class RealtimeGUI:
         self.sample_label.pack()
     
     def load_model(self):
-        model_path = os.path.join(SCRIPT_DIR, 'best_model.pth')
-        scaler_path = os.path.join(SCRIPT_DIR, 'scaler.pkl')
-        config_path = os.path.join(SCRIPT_DIR, 'config.json')
+        # Model bilgilerini al
+        model_info = AVAILABLE_MODELS.get(self.model_name, AVAILABLE_MODELS['seq64'])
+        model_path = os.path.join(SCRIPT_DIR, model_info['model'])
+        scaler_path = os.path.join(SCRIPT_DIR, model_info['scaler'])
+        config_path = os.path.join(SCRIPT_DIR, model_info['config'])
+        label_map_path = os.path.join(SCRIPT_DIR, model_info['label_map'])
         
-        if not all(os.path.exists(p) for p in [model_path, scaler_path, config_path]):
-            self.status_label.config(text="⚠️ Model bulunamadı!", fg='red')
+        missing_files = []
+        for path, name in [(model_path, 'Model'), (scaler_path, 'Scaler'), 
+                          (config_path, 'Config'), (label_map_path, 'Label Map')]:
+            if not os.path.exists(path):
+                missing_files.append(os.path.basename(path))
+        
+        if missing_files:
+            self.status_label.config(text=f"⚠️ {self.model_name} bulunamadı!", fg='red')
             messagebox.showwarning("Uyarı", 
-                "Model dosyaları bulunamadı!\n\n"
-                "Önce şunları çalıştırın:\n"
-                "1. python data_preprocess.py\n"
-                "2. python train_model.py")
+                f"'{self.model_name}' model dosyaları bulunamadı!\n\n"
+                f"Eksik: {', '.join(missing_files)}\n\n"
+                f"Eğitmek için:\n"
+                f"python train_experiment.py --seq-len {self.model_name.replace('seq', '')}")
             return False
         
-        self.engine = PredictionEngine(model_path, scaler_path, config_path)
-        self.status_label.config(text=f"✅ Model yüklendi (Acc: {self.engine.val_acc:.1f}%)", fg='#00ff88')
+        self.engine = PredictionEngine(model_path, scaler_path, config_path, label_map_path)
+        seq_len = self.engine.config.get('sequence_length', 64)
+        self.status_label.config(
+            text=f"✅ {model_info['name']} (Acc: {self.engine.val_acc:.1f}%, seq={seq_len})", 
+            fg='#00ff88'
+        )
         return True
     
-    def toggle_prediction(self):
-        if not self.running:
-            self.start_prediction()
-        else:
-            self.stop_prediction()
-    
-    def start_prediction(self):
+    def connect_device(self):
+        """AŞAMA 1: Cihaza bağlan ve sinyal kalitesini göster"""
         if self.engine is None:
             if not self.load_model():
                 return
         
-        if self.mode_var.get() == 'simulation':
+        mode = self.mode_var.get()
+        
+        if mode == 'simulation':
             self.connector = SimulatedMindWave()
             self.connector.connect()
-        else:
+            self.status_label.config(text="✅ Simülasyon bağlandı", fg='#00ff88')
+        
+        elif mode == 'thinkgear':
+            try:
+                from realtime_predict import ThinkGearConnector
+                self.connector = ThinkGearConnector(host='127.0.0.1', port=13854)
+                if not self.connector.connect():
+                    messagebox.showerror("Hata", 
+                        "ThinkGear Connector'a bağlanılamadı!\n\n"
+                        "ThinkGear Connector uygulamasının çalıştığından emin olun.")
+                    return
+                self.connector.start()
+                self.status_label.config(text="✅ ThinkGear bağlandı", fg='#00ff88')
+            except Exception as e:
+                messagebox.showerror("Hata", f"ThinkGear bağlantı hatası: {e}")
+                return
+        
+        elif mode == 'serial':
             try:
                 from realtime_predict import MindWaveRawConnector
                 port = self.port_entry.get()
@@ -495,25 +601,76 @@ class RealtimeGUI:
                     messagebox.showerror("Hata", f"MindWave'e bağlanılamadı: {port}")
                     return
                 self.connector.start()
+                self.status_label.config(text=f"✅ Seri port bağlandı ({port})", fg='#00ff88')
             except Exception as e:
-                messagebox.showerror("Hata", f"Bağlantı hatası: {e}")
+                messagebox.showerror("Hata", f"Seri port bağlantı hatası: {e}")
                 return
         
+        # Butonları güncelle
+        self.btn_connect.config(text="🔌 BAĞLANDI", bg='#27ae60', state=tk.DISABLED)
+        self.btn_start.config(state=tk.NORMAL, bg='#2ecc71')
+        
+        # Sinyal kalitesi izleme başlat
+        self.monitoring = True
+        self.monitor_signal()
+    
+    def monitor_signal(self):
+        """Sinyal kalitesini izle (bağlantı sonrası, tahmin öncesi)"""
+        if not self.monitoring or self.running:
+            return
+        
+        if self.connector:
+            signal_quality = self.connector.poor_signal
+            
+            if signal_quality == 0:
+                status = "✅ Mükemmel"
+                color = '#00ff88'
+            elif signal_quality < 50:
+                status = "👍 İyi"
+                color = '#00ff88'
+            elif signal_quality < 100:
+                status = "⚠️ Orta"
+                color = '#feca57'
+            else:
+                status = "❌ Zayıf"
+                color = '#ff6b6b'
+            
+            self.pred_label.config(text=f"📊 Sinyal: {signal_quality}", fg=color)
+            self.buffer_label.config(text=f"Sinyal Kalitesi: {status}")
+        
+        self.root.after(500, self.monitor_signal)
+    
+    def start_prediction(self):
+        """AŞAMA 2: Tahmine başla"""
+        if self.connector is None:
+            messagebox.showwarning("Uyarı", "Önce cihaza bağlanın!")
+            return
+        
+        self.monitoring = False  # Sinyal izlemeyi durdur
         self.running = True
-        self.btn_start.config(text="⏹️ DURDUR", bg='#e74c3c')
-        self.status_label.config(text="🔴 Çalışıyor...", fg='#ff6b6b')
+        
+        # Butonları güncelle
+        self.btn_start.config(text="▶️ ÇALIŞIYOR", bg='#27ae60', state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL, bg='#e74c3c')
+        self.status_label.config(text="🔴 Tahmin yapılıyor...", fg='#ff6b6b')
         
         self.update_loop()
     
     def stop_prediction(self):
+        """Tahmini durdur"""
         self.running = False
+        self.monitoring = False
         
         if self.connector:
             self.connector.disconnect()
             self.connector = None
         
-        self.btn_start.config(text="▶️ BAŞLAT", bg='#2ecc71')
+        # Butonları sıfırla
+        self.btn_connect.config(text="🔌 BAĞLAN", bg='#3498db', state=tk.NORMAL)
+        self.btn_start.config(text="▶️ BAŞLAT", bg='#95a5a6', state=tk.DISABLED)
+        self.btn_stop.config(bg='#95a5a6', state=tk.DISABLED)
         self.status_label.config(text="⏸️ Durduruldu", fg='#888')
+        self.pred_label.config(text="⏳ Bekleniyor...", fg='white')
     
     def update_loop(self):
         if not self.running:
@@ -566,6 +723,7 @@ class RealtimeGUI:
         self.ax_bands.bar(range(len(BAND_NAMES)), values, color=BAND_COLORS)
         self.ax_bands.set_xticks(range(len(BAND_NAMES)))
         self.ax_bands.set_xticklabels(['δ', 'θ', 'Lα', 'Hα', 'Lβ', 'Hβ', 'Lγ', 'Mγ'], color='white')
+        self.ax_bands.set_ylim(0, 20)  # Y eksenini 20'de sabitle
         self.ax_bands.set_title('FFT Bant Güçleri (log)', color='white')
         self.ax_bands.tick_params(colors='white')
         
@@ -595,14 +753,48 @@ class RealtimeGUI:
 # ============================================================================
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description='LSTM+CNN GUI (Raw → FFT)')
+    parser = argparse.ArgumentParser(
+        description='LSTM+CNN GUI (Raw → FFT)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Kullanım Örnekleri:
+  python realtime_gui.py --simulation                 # Test için simülasyon (seq64)
+  python realtime_gui.py --simulation --model seq96   # seq96 ile simülasyon
+  python realtime_gui.py --thinkgear --model seq96    # ThinkGear + seq96
+  python realtime_gui.py --port COM5 --model seq128   # Seri port + seq128
+  
+  python realtime_gui.py --list-models                # Mevcut modelleri listele
+        """
+    )
+    
+    # Model seçimi
+    parser.add_argument('--model', default='seq64', choices=list(AVAILABLE_MODELS.keys()),
+                       help='Kullanılacak model (varsayılan: seq64)')
+    parser.add_argument('--list-models', action='store_true',
+                       help='Mevcut modelleri listele ve çık')
+    
+    # Bağlantı modu
     parser.add_argument('--simulation', action='store_true', help='Simülasyon modu')
-    parser.add_argument('--port', default='COM5', help='COM port')
+    parser.add_argument('--thinkgear', action='store_true', help='ThinkGear Connector kullan')
+    parser.add_argument('--port', default='COM5', help='COM port (seri port modu için)')
     args = parser.parse_args()
     
+    # Model listesi göster
+    if args.list_models:
+        print("\n" + "=" * 60)
+        print("📦 MEVCUT MODELLER")
+        print("=" * 60)
+        for key, info in AVAILABLE_MODELS.items():
+            model_path = os.path.join(SCRIPT_DIR, info['model'])
+            exists = "✅" if os.path.exists(model_path) else "❌"
+            print(f"\n{exists} {key}: {info['name']}")
+            print(f"   {info['description']}")
+        print()
+        return
+    
     root = tk.Tk()
-    app = RealtimeGUI(root, use_simulation=args.simulation, port=args.port)
+    app = RealtimeGUI(root, use_simulation=args.simulation, port=args.port, 
+                      use_thinkgear=args.thinkgear, model_name=args.model)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 

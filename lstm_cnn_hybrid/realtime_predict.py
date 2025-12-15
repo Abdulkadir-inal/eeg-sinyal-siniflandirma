@@ -10,9 +10,24 @@ MindWave'in kendi FFT'sini DEĞİL, bizim hesapladığımız FFT'yi kullanır.
 Pipeline:
     Raw EEG → Notch Filter (50Hz) → Bandpass (0.5-50Hz) → FFT → Model
 
+İki Bağlantı Modu:
+    1. Seri Port (Direkt bağlantı)
+    2. ThinkGear Connector (TCP/JSON - önerilen)
+
+Model Seçenekleri:
+    --model seq64   : Baseline model (sequence_length=64)
+    --model seq96   : Genişletilmiş görüş (sequence_length=96)
+    --model seq128  : En geniş görüş (sequence_length=128)
+
 Kullanım:
-    python realtime_predict.py --port COM5    (Windows)
-    python realtime_predict.py --port /dev/ttyUSB0  (Linux)
+    # Seri port ile (Windows) - varsayılan model (seq64)
+    python realtime_predict.py --port COM5
+    
+    # seq96 modeli ile ThinkGear
+    python realtime_predict.py --thinkgear --model seq96
+    
+    # seq128 modeli ile seri port
+    python realtime_predict.py --port /dev/ttyUSB0 --model seq128
 """
 
 import os
@@ -41,9 +56,44 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BAUD_RATE = 57600
 
 # Tahmin ayarları
-SEQUENCE_LENGTH = 64  # Model'in beklediği sequence uzunluğu
 PREDICTION_INTERVAL = 0.5  # Her 0.5 saniyede bir tahmin
 CONFIDENCE_THRESHOLD = 0.6  # Minimum güven skoru
+
+# Model seçenekleri
+AVAILABLE_MODELS = {
+    'seq32': {
+        'name': 'Hızlı (seq32)',
+        'model': 'seq32_best_model.pth',
+        'config': 'seq32_config.json',
+        'scaler': 'seq32_scaler.pkl',
+        'label_map': 'seq32_label_map.json',
+        'description': 'En hızlı tepki, sequence_length=32 (~4s gecikme)'
+    },
+    'seq64': {
+        'name': 'Baseline (seq64)',
+        'model': 'best_model.pth',
+        'config': 'config.json',
+        'scaler': 'scaler.pkl',
+        'label_map': 'label_map.json',
+        'description': 'Varsayılan model, sequence_length=64'
+    },
+    'seq96': {
+        'name': 'Genişletilmiş (seq96)',
+        'model': 'seq96_best_model.pth',
+        'config': 'seq96_config.json',
+        'scaler': 'seq96_scaler.pkl',
+        'label_map': 'seq96_label_map.json',
+        'description': 'Daha geniş görüş alanı, sequence_length=96'
+    },
+    'seq128': {
+        'name': 'En Geniş (seq128)',
+        'model': 'seq128_best_model.pth',
+        'config': 'seq128_config.json',
+        'scaler': 'seq128_scaler.pkl',
+        'label_map': 'seq128_label_map.json',
+        'description': 'En geniş görüş alanı, sequence_length=128'
+    }
+}
 
 
 # ============================================================================
@@ -226,13 +276,139 @@ class MindWaveRawConnector:
 
 
 # ============================================================================
+# THINKGEAR CONNECTOR BAĞLANTISI (TCP/JSON)
+# ============================================================================
+
+class ThinkGearConnector:
+    """
+    ThinkGear Connector üzerinden RAW EEG verisi okur.
+    TCP Socket ile localhost:13854'e bağlanır.
+    JSON formatında veri alır.
+    
+    NOT: ThinkGear Connector uygulamasının çalışıyor olması gerekir!
+    """
+    
+    def __init__(self, host='127.0.0.1', port=13854):
+        self.host = host
+        self.port = port
+        self.socket = None
+        self.running = False
+        
+        # Raw EEG buffer
+        self.raw_samples = deque(maxlen=2048)  # ~4 saniye
+        self.lock = threading.Lock()
+        
+        # Sinyal kalitesi
+        self.poor_signal = 0
+        self.last_raw_time = 0
+        
+        # Buffer for incomplete JSON
+        self.buffer = ""
+    
+    def connect(self):
+        """ThinkGear Connector'a TCP bağlantısı kur"""
+        import socket
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.host, self.port))
+            self.socket.settimeout(1.0)
+            
+            # Raw EEG output'u etkinleştir
+            config = json.dumps({
+                "enableRawOutput": True,
+                "format": "Json"
+            })
+            self.socket.send(config.encode('utf-8'))
+            
+            print(f"✅ ThinkGear Connector bağlandı: {self.host}:{self.port}")
+            return True
+        except Exception as e:
+            print(f"❌ ThinkGear Connector bağlantı hatası: {e}")
+            print("   ThinkGear Connector uygulamasının çalıştığından emin olun!")
+            return False
+    
+    def disconnect(self):
+        """Bağlantıyı kapat"""
+        self.running = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+    
+    def read_loop(self):
+        """Sürekli veri okuma (TCP)"""
+        self.running = True
+        
+        while self.running:
+            try:
+                data = self.socket.recv(4096)
+                if not data:
+                    continue
+                
+                self.buffer += data.decode('utf-8')
+                
+                # JSON objeleri ayır (her satır bir JSON)
+                while '\r' in self.buffer:
+                    line, self.buffer = self.buffer.split('\r', 1)
+                    line = line.strip()
+                    if line:
+                        try:
+                            packet = json.loads(line)
+                            self.parse_json(packet)
+                        except json.JSONDecodeError:
+                            pass
+                            
+            except Exception as e:
+                if self.running and "timed out" not in str(e):
+                    print(f"ThinkGear okuma hatası: {e}")
+                    time.sleep(0.1)
+    
+    def parse_json(self, packet):
+        """JSON paketi parse et"""
+        # Raw EEG değeri
+        if 'rawEeg' in packet:
+            raw_value = packet['rawEeg']
+            with self.lock:
+                self.raw_samples.append(raw_value)
+            self.last_raw_time = time.time()
+        
+        # Sinyal kalitesi
+        if 'poorSignalLevel' in packet:
+            self.poor_signal = packet['poorSignalLevel']
+    
+    def get_raw_samples(self, count=None):
+        """Raw sample'ları al ve buffer'dan temizle"""
+        with self.lock:
+            if count is None:
+                samples = list(self.raw_samples)
+                self.raw_samples.clear()
+            else:
+                samples = []
+                for _ in range(min(count, len(self.raw_samples))):
+                    samples.append(self.raw_samples.popleft())
+        return samples
+    
+    def get_buffer_size(self):
+        """Buffer'daki sample sayısı"""
+        with self.lock:
+            return len(self.raw_samples)
+    
+    def start(self):
+        """Okuma thread'ini başlat"""
+        self.thread = threading.Thread(target=self.read_loop, daemon=True)
+        self.thread.start()
+
+
+# ============================================================================
 # TAHMİN MOTORU (Raw EEG → FFT → Model)
 # ============================================================================
 
 class PredictionEngine:
     """Raw EEG'den FFT hesaplar ve model ile tahmin yapar"""
     
-    def __init__(self, model_path, scaler_path, config_path):
+    def __init__(self, model_path, scaler_path, config_path, label_map_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Config yükle
@@ -240,7 +416,8 @@ class PredictionEngine:
             self.config = json.load(f)
         
         # Label map yükle
-        label_map_path = os.path.join(os.path.dirname(config_path), 'label_map.json')
+        if label_map_path is None:
+            label_map_path = os.path.join(os.path.dirname(config_path), 'label_map.json')
         with open(label_map_path, 'r', encoding='utf-8') as f:
             self.label_map = json.load(f)
         
@@ -259,7 +436,8 @@ class PredictionEngine:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
         
-        print(f"✅ Model yüklendi: {model_path}")
+        print(f"✅ Model yüklendi: {os.path.basename(model_path)}")
+        print(f"   Sequence Length: {self.config['sequence_length']}")
         print(f"   Validation Accuracy: {checkpoint.get('val_acc', 0):.2f}%")
         
         # Sinyal işleyici (Raw → FFT)
@@ -383,39 +561,236 @@ class PredictionEngine:
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='LSTM+CNN Canlı Tahmin (Raw EEG → FFT)')
-    parser.add_argument('--port', required=True, help='COM port (örn: COM5 veya /dev/ttyUSB0)')
-    parser.add_argument('--threshold', type=float, default=0.6, help='Güven eşiği')
+    parser = argparse.ArgumentParser(
+        description='LSTM+CNN Canlı Tahmin (Raw EEG → FFT)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Kullanım Örnekleri:
+  # Varsayılan model (seq64) ile seri port
+  python realtime_predict.py --port COM5
+  
+  # seq96 modeli ile ThinkGear
+  python realtime_predict.py --thinkgear --model seq96
+  
+  # seq128 modeli ile seri port
+  python realtime_predict.py --port /dev/ttyUSB0 --model seq128
+  
+  # Mevcut modelleri listele
+  python realtime_predict.py --list-models
+        """
+    )
+    
+    # Model seçimi
+    parser.add_argument('--model', default='seq64', choices=list(AVAILABLE_MODELS.keys()),
+                       help='Kullanılacak model (varsayılan: seq64)')
+    parser.add_argument('--list-models', action='store_true',
+                       help='Mevcut modelleri listele ve çık')
+    
+    # Bağlantı türü
+    conn_group = parser.add_mutually_exclusive_group()
+    conn_group.add_argument('--port', help='Seri port (örn: COM5 veya /dev/ttyUSB0)')
+    conn_group.add_argument('--thinkgear', action='store_true', 
+                           help='ThinkGear Connector kullan (TCP/JSON)')
+    
+    # ThinkGear ayarları
+    parser.add_argument('--tg-host', default='127.0.0.1', 
+                       help='ThinkGear Connector host (varsayılan: 127.0.0.1)')
+    parser.add_argument('--tg-port', type=int, default=13854, 
+                       help='ThinkGear Connector port (varsayılan: 13854)')
+    
+    # Genel ayarlar
+    parser.add_argument('--threshold', type=float, default=0.6, help='Güven eşiği (0-1)')
+    
     args = parser.parse_args()
+    
+    # Model listesi göster
+    if args.list_models:
+        print("\n" + "=" * 60)
+        print("📦 MEVCUT MODELLER")
+        print("=" * 60)
+        for key, info in AVAILABLE_MODELS.items():
+            model_path = os.path.join(SCRIPT_DIR, info['model'])
+            exists = "✅" if os.path.exists(model_path) else "❌"
+            print(f"\n{exists} {key}: {info['name']}")
+            print(f"   {info['description']}")
+            print(f"   Dosyalar: {info['model']}, {info['config']}")
+        print()
+        return
+    
+    # Bağlantı modu kontrolü
+    if not args.port and not args.thinkgear:
+        parser.error("--port veya --thinkgear belirtmelisiniz. --list-models ile modelleri görebilirsiniz.")
+    
+    # Model bilgilerini al
+    model_info = AVAILABLE_MODELS[args.model]
+    model_path = os.path.join(SCRIPT_DIR, model_info['model'])
+    scaler_path = os.path.join(SCRIPT_DIR, model_info['scaler'])
+    config_path = os.path.join(SCRIPT_DIR, model_info['config'])
+    label_map_path = os.path.join(SCRIPT_DIR, model_info['label_map'])
     
     print("\n" + "=" * 60)
     print("🧠 LSTM+CNN Hibrit Model - Canlı Tahmin")
     print("   (Raw EEG → Filtre → FFT → Model)")
     print("=" * 60)
+    print(f"\n📦 Seçilen Model: {model_info['name']}")
+    print(f"   {model_info['description']}")
     
-    # Dosya yolları
-    model_path = os.path.join(SCRIPT_DIR, 'best_model.pth')
-    scaler_path = os.path.join(SCRIPT_DIR, 'scaler.pkl')
-    config_path = os.path.join(SCRIPT_DIR, 'config.json')
-    
-    for path, name in [(model_path, 'Model'), (scaler_path, 'Scaler'), (config_path, 'Config')]:
+    # Dosya kontrolü
+    missing_files = []
+    for path, name in [(model_path, 'Model'), (scaler_path, 'Scaler'), 
+                       (config_path, 'Config'), (label_map_path, 'Label Map')]:
         if not os.path.exists(path):
-            print(f"❌ {name} bulunamadı: {path}")
+            missing_files.append(f"{name}: {os.path.basename(path)}")
+    
+    if missing_files:
+        print(f"\n❌ Eksik dosyalar:")
+        for f in missing_files:
+            print(f"   - {f}")
+        print(f"\n💡 İpucu: '{args.model}' modeli henüz eğitilmemiş olabilir.")
+        print(f"   Eğitmek için: python train_experiment.py --seq-len {args.model.replace('seq', '')}")
+        return
+    
+    # Engine oluştur
+    print("\n📦 Model yükleniyor...")
+    engine = PredictionEngine(model_path, scaler_path, config_path, label_map_path)
+    
+    # =====================================================================
+    # AŞAMA 1: Bağlantı için kullanıcı komutu bekle
+    # =====================================================================
+    connection_type = "ThinkGear Connector (TCP)" if args.thinkgear else f"Seri Port ({args.port})"
+    print("\n" + "=" * 60)
+    print("📋 KOMUTLAR:")
+    print("   'baglan' veya 'b' → Cihaza bağlan")
+    print("   'q' → Çıkış")
+    print("=" * 60)
+    print(f"\n🔌 Bağlantı modu: {connection_type}")
+    print("   MindWave başlığını hazırlayın...")
+    print()
+    
+    connector = None
+    
+    while True:
+        try:
+            user_input = input(">> ").strip().lower()
+            if user_input in ['baglan', 'bağlan', 'connect', 'b', 'c']:
+                break
+            elif user_input in ['q', 'quit', 'exit', 'cik', 'çık']:
+                print("👋 Çıkış yapılıyor...")
+                return
+            else:
+                print("   'baglan' yazıp ENTER'a basın (çıkmak için 'q')")
+        except EOFError:
             return
     
-    # Engine
-    print("\n📦 Model yükleniyor...")
-    engine = PredictionEngine(model_path, scaler_path, config_path)
-    
-    # MindWave bağlantısı
-    print(f"\n📡 MindWave'e bağlanılıyor: {args.port}")
-    connector = MindWaveRawConnector(args.port)
+    # Bağlantı kur
+    if args.thinkgear:
+        print(f"\n📡 ThinkGear Connector'a bağlanılıyor: {args.tg_host}:{args.tg_port}")
+        print("   (ThinkGear Connector uygulamasının çalıştığından emin olun!)")
+        connector = ThinkGearConnector(host=args.tg_host, port=args.tg_port)
+    else:
+        print(f"\n📡 MindWave'e bağlanılıyor (Seri port): {args.port}")
+        connector = MindWaveRawConnector(args.port)
     
     if not connector.connect():
-        print("❌ MindWave bağlantısı kurulamadı!")
+        print("❌ Bağlantı kurulamadı!")
+        if args.thinkgear:
+            print("\n💡 İpucu: ThinkGear Connector uygulamasını başlattınız mı?")
+            print("   Windows: Başlat menüsünden 'ThinkGear Connector' arayın")
         return
     
     connector.start()
+    
+    # =====================================================================
+    # AŞAMA 2: Sinyal kalitesini göster ve tahmin için bekle
+    # =====================================================================
+    print("\n" + "=" * 60)
+    print("✅ Bağlantı kuruldu!")
+    print(f"   Mod: {connection_type}")
+    print("=" * 60)
+    
+    print("\n🎧 MindWave başlığını takın...")
+    print("   Sinyal kalitesi izleniyor (0 = iyi, 200 = kötü)")
+    print()
+    print("📋 KOMUTLAR:")
+    print("   'basla' veya 's' → Tahmine başla")
+    print("   'q' → Çıkış")
+    print()
+    
+    # Sinyal kalitesini göster (arka planda)
+    import sys
+    last_signal_time = 0
+    
+    while True:
+        try:
+            # Sinyal kalitesini her saniye göster
+            current_time = time.time()
+            if current_time - last_signal_time >= 1.0:
+                last_signal_time = current_time
+                signal_quality = connector.poor_signal
+                buffer_size = connector.get_buffer_size()
+                
+                if signal_quality == 0:
+                    status = "✅ Mükemmel"
+                    color = "\033[92m"
+                elif signal_quality < 50:
+                    status = "👍 İyi"
+                    color = "\033[92m"
+                elif signal_quality < 100:
+                    status = "⚠️ Orta"
+                    color = "\033[93m"
+                else:
+                    status = "❌ Zayıf"
+                    color = "\033[91m"
+                
+                sys.stdout.write(f"\r{color}📊 Sinyal: {signal_quality:3d} ({status}) | Buffer: {buffer_size} sample\033[0m   ")
+                sys.stdout.flush()
+            
+            # Non-blocking input check (Windows compatible)
+            import select
+            if sys.platform == 'win32':
+                import msvcrt
+                if msvcrt.kbhit():
+                    char = msvcrt.getwch()
+                    if char == '\r':  # Enter
+                        sys.stdout.write('\n')
+                        user_input = input(">> ").strip().lower()
+                        if user_input in ['basla', 'başla', 'start', 's']:
+                            break
+                        elif user_input in ['q', 'quit', 'exit', 'cik', 'çık']:
+                            print("👋 Çıkış yapılıyor...")
+                            connector.disconnect()
+                            return
+                        else:
+                            print("   'basla' yazıp ENTER'a basın (çıkmak için 'q')")
+            else:
+                # Linux/Mac
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    user_input = sys.stdin.readline().strip().lower()
+                    if user_input in ['basla', 'başla', 'start', 's']:
+                        break
+                    elif user_input in ['q', 'quit', 'exit', 'cik', 'çık']:
+                        print("\n👋 Çıkış yapılıyor...")
+                        connector.disconnect()
+                        return
+                    elif user_input:
+                        print("\n   'basla' yazıp ENTER'a basın (çıkmak için 'q')")
+            
+            time.sleep(0.1)
+            
+        except EOFError:
+            break
+        except Exception as e:
+            # Fallback: blocking input
+            print()
+            user_input = input(">> ").strip().lower()
+            if user_input in ['basla', 'başla', 'start', 's']:
+                break
+            elif user_input in ['q', 'quit', 'exit', 'cik', 'çık']:
+                print("👋 Çıkış yapılıyor...")
+                connector.disconnect()
+                return
+    
+    print("\n")  # Yeni satır
     
     # Ctrl+C handler
     running = True
@@ -426,8 +801,9 @@ def main():
     
     sig.signal(sig.SIGINT, signal_handler)
     
-    print("\n" + "=" * 60)
+    print("=" * 60)
     print("🎯 TAHMİN BAŞLADI!")
+    print(f"   Bağlantı: {connection_type}")
     print("   Pipeline: Raw EEG → Filtre → FFT → Model")
     print("   Ctrl+C ile çıkış")
     print("=" * 60)
