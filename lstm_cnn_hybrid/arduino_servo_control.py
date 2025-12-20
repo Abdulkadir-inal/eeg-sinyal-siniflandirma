@@ -20,6 +20,7 @@ Arduino Kodu:
     #include <Servo.h>
     
     Servo myServo;
+    bool servoAttached = true;
     
     void setup() {
       Serial.begin(9600);
@@ -32,13 +33,20 @@ Arduino Kodu:
         char cmd = Serial.read();
         
         if (cmd == 'Y') {        // Yukarı
+          if (!servoAttached) { myServo.attach(9); servoAttached = true; }
           myServo.write(180);
         }
         else if (cmd == 'A') {   // Aşağı
+          if (!servoAttached) { myServo.attach(9); servoAttached = true; }
           myServo.write(0);
         }
         else if (cmd == 'R') {   // Araba (orta)
+          if (!servoAttached) { myServo.attach(9); servoAttached = true; }
           myServo.write(90);
+        }
+        else if (cmd == 'S') {   // Stop (servo serbest)
+          myServo.detach();
+          servoAttached = false;
         }
       }
     }
@@ -47,6 +55,7 @@ Komutlar:
     'Y' -> Yukarı (servo 180°)
     'A' -> Aşağı (servo 0°)
     'R' -> Araba/Reset (servo 90°)
+    'S' -> Stop (servo serbest bırak - motor durdur)
 """
 
 import serial
@@ -61,9 +70,10 @@ class ArduinoController:
     Tahmin sonucuna göre servo pozisyonunu değiştirir.
     
     Komutlar:
-        b'Y' -> yukarı (servo yukarı pozisyon)
-        b'A' -> aşağı (servo aşağı pozisyon)  
-        b'R' -> araba (servo orta pozisyon)
+        b'Y' -> yukarı (servo yukarı pozisyon - 180°)
+        b'A' -> aşağı (servo aşağı pozisyon - 0°)  
+        b'R' -> araba (servo orta pozisyon - 90°)
+        b'S' -> stop (servo durdur - detach, motor serbest)
     """
     
     def __init__(self, port, baud_rate=9600):
@@ -118,6 +128,10 @@ class ArduinoController:
                 self.serial_conn.write(b'R')
                 print(f"   🚗 Servo: ARABA/ORTA (90°)")
                 return True
+            elif 'stop' in label_lower or 'dur' in label_lower:
+                self.serial_conn.write(b'S')
+                print(f"   ⏹️ Servo: DURDURULDU (detach)")
+                return True
             else:
                 print(f"   ⚠️ Bilinmeyen etiket: {label}")
                 return False
@@ -131,7 +145,7 @@ class ArduinoController:
         Ham komut gönder (test için).
         
         Args:
-            command: Tek karakter ('Y', 'A', 'R')
+            command: Tek karakter ('Y', 'A', 'R', 'S')
         """
         if not self.connected or self.serial_conn is None:
             print("❌ Arduino bağlı değil!")
@@ -145,12 +159,27 @@ class ArduinoController:
             print(f"❌ Yazma hatası: {e}")
             return False
     
+    def stop_servo(self):
+        """Servo motoru durdur (serbest bırak)"""
+        if not self.connected or self.serial_conn is None:
+            return False
+        try:
+            self.serial_conn.write(b'S')
+            print("   ⏹️ Servo DURDURULDU (detach)")
+            return True
+        except serial.SerialException as e:
+            print(f"❌ Arduino yazma hatası: {e}")
+            return False
+    
     def close(self):
         """Seri port bağlantısını kapat"""
         if self.serial_conn is not None:
             try:
+                # Kapatmadan önce servo'yu durdur
+                self.serial_conn.write(b'S')
+                time.sleep(0.1)
                 self.serial_conn.close()
-                print("✅ Arduino bağlantısı kapatıldı")
+                print("✅ Arduino bağlantısı kapatıldı (servo durduruldu)")
             except:
                 pass
         self.connected = False
@@ -185,7 +214,8 @@ def test_mode(controller):
     print("   y, yukari  -> Servo yukarı (180°)")
     print("   a, asagi   -> Servo aşağı (0°)")
     print("   r, araba   -> Servo orta (90°)")
-    print("   Y, A, R    -> Ham komut gönder")
+    print("   s, stop    -> Servo durdur (detach)")
+    print("   Y, A, R, S -> Ham komut gönder")
     print("   q, quit    -> Çıkış")
     print("=" * 50)
     print()
@@ -203,11 +233,13 @@ def test_mode(controller):
                 controller.send_command('asagı')
             elif cmd.lower() in ['r', 'araba', 'reset']:
                 controller.send_command('araba')
-            elif cmd in ['Y', 'A', 'R']:
+            elif cmd.lower() in ['s', 'stop', 'dur']:
+                controller.stop_servo()
+            elif cmd in ['Y', 'A', 'R', 'S']:
                 controller.send_raw(cmd)
             elif cmd:
                 print(f"   ⚠️ Bilinmeyen komut: {cmd}")
-                print("   Kullanım: y/a/r veya Y/A/R veya q")
+                print("   Kullanım: y/a/r/s veya Y/A/R/S veya q")
         
         except KeyboardInterrupt:
             print("\n👋 Çıkış...")

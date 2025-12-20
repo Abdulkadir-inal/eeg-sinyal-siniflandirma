@@ -658,7 +658,7 @@ def load_fft_csv(file_path):
     return data
 
 def run_file_mode(args):
-    """FFT CSV dosyasından tahmin yap"""
+    """FFT CSV dosyasından tahmin yap (Arduino desteği ile)"""
     
     # Model bilgilerini al
     model_info = AVAILABLE_MODELS[args.model]
@@ -666,6 +666,14 @@ def run_file_mode(args):
     scaler_path = os.path.join(SCRIPT_DIR, model_info['scaler'])
     config_path = os.path.join(SCRIPT_DIR, model_info['config'])
     label_map_path = os.path.join(SCRIPT_DIR, model_info['label_map'])
+    
+    # Arduino kontrolcüsü
+    arduino = None
+    if args.arduino:
+        arduino = ArduinoController(args.arduino)
+        if not arduino.connect():
+            print("⚠️ Arduino bağlanamadı, sadece tahmin yapılacak")
+            arduino = None
     
     print("\n" + "=" * 60)
     print("📂 DOSYA MODU - FFT CSV → Model")
@@ -750,6 +758,8 @@ def run_file_mode(args):
                 from collections import Counter
                 label_counts = Counter(r['label'] for r in results)
                 most_common = label_counts.most_common()
+                dominant_label = most_common[0][0]  # En çok tekrar eden tahmin
+                dominant_conf = most_common[0][1] / len(results)  # Yüzde
                 
                 # Ortalama güven
                 avg_conf = sum(r['confidence'] for r in results) / len(results)
@@ -760,6 +770,14 @@ def run_file_mode(args):
                     pct = count / len(results) * 100
                     print(f"{label}={pct:.1f}% ", end='')
                 print(f"\n   🎯 Ortalama güven: {avg_conf*100:.1f}%")
+                
+                # Arduino'ya dominant tahmin gönder
+                if arduino and dominant_conf >= args.threshold:
+                    print(f"   🤖 Arduino: {dominant_label} komutu gönderiliyor...")
+                    arduino.send_command(dominant_label)
+                    time.sleep(0.5)  # Servo hareket için bekle
+                elif arduino:
+                    print(f"   ⚠️ Güven eşiği altında ({dominant_conf*100:.1f}% < {args.threshold*100:.0f}%), Arduino'ya gönderilmedi")
                 
                 # Detaylı çıktı
                 if args.verbose:
@@ -794,6 +812,10 @@ def run_file_mode(args):
                 import traceback
                 traceback.print_exc()
     
+    # Arduino bağlantısını kapat
+    if arduino:
+        arduino.close()
+    
     # Özet
     print("\n" + "=" * 60)
     print("📊 ÖZET")
@@ -825,9 +847,10 @@ class ArduinoController:
     Tahmin sonucuna göre servo pozisyonunu değiştirir.
     
     Komutlar:
-        b'Y' -> yukarı (servo yukarı pozisyon)
-        b'A' -> aşağı (servo aşağı pozisyon)  
-        b'R' -> araba (servo orta pozisyon)
+        b'Y' -> yukarı (servo yukarı pozisyon - 180°)
+        b'A' -> aşağı (servo aşağı pozisyon - 0°)  
+        b'R' -> araba (servo orta pozisyon - 90°)
+        b'S' -> stop (servo durdur - detach, motor serbest)
     """
     
     def __init__(self, port, baud_rate=9600):
@@ -873,8 +896,23 @@ class ArduinoController:
             elif 'araba' in label.lower():
                 self.serial_conn.write(b'R')
                 return True
+            elif 'stop' in label.lower() or 'dur' in label.lower():
+                self.serial_conn.write(b'S')
+                return True
             else:
                 return False
+        except serial.SerialException as e:
+            print(f"❌ Arduino yazma hatası: {e}")
+            return False
+    
+    def stop_servo(self):
+        """Servo motoru durdur (serbest bırak)"""
+        if not self.connected or self.serial_conn is None:
+            return False
+        try:
+            self.serial_conn.write(b'S')
+            print("   ⏹️ Servo DURDURULDU (detach)")
+            return True
         except serial.SerialException as e:
             print(f"❌ Arduino yazma hatası: {e}")
             return False
@@ -883,6 +921,9 @@ class ArduinoController:
         """Seri port bağlantısını kapat"""
         if self.serial_conn is not None:
             try:
+                # Kapatmadan önce servo'yu durdur
+                self.serial_conn.write(b'S')
+                time.sleep(0.1)
                 self.serial_conn.close()
                 print("✅ Arduino bağlantısı kapatıldı")
             except:
