@@ -361,11 +361,14 @@ class ThinkGearConnector:
 # ============================================================================
 
 class EEGVisualizerGUI:
-    def __init__(self, root):
+    def __init__(self, root, use_3person_model=False):
         self.root = root
         self.root.title("🧠 EEG Tahmin Sistemi - GUI")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x950")  # Boyut büyütüldü
         self.root.configure(bg='#2C3E50')
+        
+        # Model seçimi
+        self.use_3person_model = use_3person_model
         
         # Değişkenler
         self.is_running = False
@@ -567,20 +570,35 @@ class EEGVisualizerGUI:
     def load_model(self):
         """Model ve scaler'ı yükle"""
         try:
+            # Model dizini ve dosya adlarını belirle
+            if self.use_3person_model:
+                model_dir = os.path.join(MODEL_DIR, '3person_model')
+                scaler_name = 'scaler_3person.pkl'
+                model_name = 'best_model_3person.pth'
+                model_info = "3 Kişi Model (%99.35)"
+            else:
+                model_dir = MODEL_DIR
+                scaler_name = 'scaler_transformed.pkl'
+                model_name = 'best_model_transformed.pth'
+                model_info = "Tüm Veri Model (%99.43)"
+            
+            # Pencere başlığını güncelle
+            self.root.title(f"🧠 EEG Tahmin - {model_info}")
+            
             # Scaler
-            scaler_path = os.path.join(MODEL_DIR, 'scaler_transformed.pkl')
+            scaler_path = os.path.join(model_dir, scaler_name)
             if os.path.exists(scaler_path):
                 with open(scaler_path, 'rb') as f:
                     self.scaler = pickle.load(f)
             
             # Model
-            model_path = os.path.join(MODEL_DIR, 'best_model_transformed.pth')
+            model_path = os.path.join(model_dir, model_name)
             if os.path.exists(model_path):
                 self.model = TCN_Model(input_channels=17, num_classes=3).to(self.device)
                 state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
                 self.model.load_state_dict(state_dict)
                 self.model.eval()
-                print("✅ Model yüklendi")
+                print(f"✅ {model_info} yüklendi")
             else:
                 messagebox.showerror("Hata", f"Model bulunamadı:\n{model_path}")
         
@@ -860,8 +878,36 @@ def main():
         print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
     print("="*60)
     
+    # Model seçimi
+    print("\n📊 MODEL SEÇİMİ")
+    print("-"*60)
+    print("1. 📈 Tüm Veri Modeli (%99.43 accuracy)")
+    print("   • Tüm katılımcılar dahil")
+    print("   • 20,207 window ile eğitildi")
+    print("")
+    print("2. 👥 3 Kişi Modeli (%99.35 accuracy)")
+    print("   • Sadece: Apo, Bahadır, Canan")
+    print("   • 13,144 window ile eğitildi")
+    print("   • Daha spesifik tahmin")
+    print("-"*60)
+    
+    while True:
+        choice = input("\nModel seçin (1/2) [1]: ").strip()
+        if choice == "" or choice == "1":
+            use_3person = False
+            print("✅ Tüm Veri Modeli seçildi")
+            break
+        elif choice == "2":
+            use_3person = True
+            print("✅ 3 Kişi Modeli seçildi")
+            break
+        else:
+            print("❌ Geçersiz seçim! 1 veya 2 girin.")
+    
+    print("\n🚀 GUI başlatılıyor...")
+    
     root = tk.Tk()
-    app = EEGVisualizerGUI(root)
+    app = EEGVisualizerGUI(root, use_3person_model=use_3person)
     
     root.protocol("WM_DELETE_WINDOW", app.quit_app)
     root.mainloop()

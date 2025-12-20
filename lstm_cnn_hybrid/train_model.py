@@ -36,7 +36,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hiperparametreler
 BATCH_SIZE = 64
-EPOCHS = 100
+EPOCHS = 50  # Class weights ile daha hızlı yakınsar
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4  # L2 regularization
 DROPOUT = 0.4
@@ -338,6 +338,9 @@ def main():
     with open(os.path.join(SCRIPT_DIR, 'config.json'), 'r') as f:
         config = json.load(f)
     
+    with open(os.path.join(SCRIPT_DIR, 'label_map.json'), 'r', encoding='utf-8') as f:
+        label_map = json.load(f)
+    
     print(f"   ✅ X shape: {X.shape}")
     print(f"   ✅ y shape: {y.shape}")
     print(f"   ✅ Özellik sayısı: {config['num_features']}")
@@ -394,8 +397,21 @@ def main():
     print(f"   Toplam parametreler: {total_params:,}")
     print(f"   Eğitilecek parametreler: {trainable_params:,}")
     
+    # Sınıf ağırlıklarını hesapla (imbalance için)
+    print(f"\n⚖️  Sınıf ağırlıkları hesaplanıyor...")
+    unique, counts = np.unique(y_train_aug, return_counts=True)
+    total = len(y_train_aug)
+    class_weights = []
+    for i in range(config['num_classes']):
+        count = counts[np.where(unique == i)[0][0]] if i in unique else 1
+        weight = total / (config['num_classes'] * count)
+        class_weights.append(weight)
+        class_name = label_map[str(i)]
+        print(f"   {class_name:10s}: ağırlık = {weight:.3f} ({count}/{total})")
+    
     # Optimizer ve Loss
-    criterion = nn.CrossEntropyLoss()
+    class_weights_tensor = torch.FloatTensor(class_weights).to(DEVICE)
+    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=7

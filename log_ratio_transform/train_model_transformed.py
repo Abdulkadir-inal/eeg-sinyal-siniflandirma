@@ -78,7 +78,8 @@ class TCN_Model(nn.Module):
         num_levels = len(num_channels)
         
         for i in range(num_levels):
-            dilation_size = 2 ** i
+            # Daha yakın geçmişe odaklan: [1, 2, 2] yerine [1, 2, 4]
+            dilation_size = 1 if i == 0 else 2
             in_channels = input_channels if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             layers.append(TemporalBlock(in_channels, out_channels, kernel_size, stride=1,

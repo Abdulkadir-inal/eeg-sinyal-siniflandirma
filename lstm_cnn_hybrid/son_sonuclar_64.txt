@@ -1,0 +1,81 @@
+# LSTM+CNN FFT Tahmin Sonuçları
+# Model: Baseline (seq64)
+# Sequence Length: 64
+
+
+## apo_yukarı.csv
+Satır sayısı: 215744
+Tahmin sayısı: 1686
+Dağılım: {'yukarı': 1658, 'araba': 12, 'aşağı': 16}
+Ortalama güven: 96.1%
+
+## ırmak_yukarı.csv
+Satır sayısı: 170464
+Tahmin sayısı: 1332
+Dağılım: {'yukarı': 1324, 'aşağı': 8}
+Ortalama güven: 96.8%
+
+## canan_annane_yukarı.csv
+Satır sayısı: 182720
+Tahmin sayısı: 1428
+Dağılım: {'yukarı': 1404, 'araba': 12, 'aşağı': 12}
+Ortalama güven: 94.9%
+
+## bahadır_yukarı.csv
+Satır sayısı: 194240
+Tahmin sayısı: 1518
+Dağılım: {'yukarı': 1450, 'aşağı': 40, 'araba': 28}
+Ortalama güven: 93.8%
+
+## canan_yukarı.csv
+Satır sayısı: 260672
+Tahmin sayısı: 2037
+Dağılım: {'yukarı': 2017, 'aşağı': 12, 'araba': 8}
+Ortalama güven: 96.9%
+
+## canan_annane_asagı.csv
+Satır sayısı: 202432
+Tahmin sayısı: 1582
+Dağılım: {'aşağı': 1558, 'araba': 16, 'yukarı': 8}
+Ortalama güven: 93.6%
+
+## apo_asagı.csv
+Satır sayısı: 263264
+Tahmin sayısı: 2057
+Dağılım: {'aşağı': 2021, 'yukarı': 20, 'araba': 16}
+Ortalama güven: 94.2%
+
+## canan_asagı.csv
+Satır sayısı: 191488
+Tahmin sayısı: 1496
+Dağılım: {'aşağı': 1456, 'araba': 24, 'yukarı': 16}
+Ortalama güven: 92.3%
+
+## bahadır_asagı.csv
+Satır sayısı: 196032
+Tahmin sayısı: 1532
+Dağılım: {'aşağı': 1484, 'yukarı': 20, 'araba': 28}
+Ortalama güven: 93.0%
+
+## apo_araba.csv
+Satır sayısı: 209408
+Tahmin sayısı: 1636
+Dağılım: {'aşağı': 22, 'araba': 1602, 'yukarı': 12}
+Ortalama güven: 94.3%
+
+## canan_araba.csv
+Satır sayısı: 210976
+Tahmin sayısı: 1648
+Dağılım: {'araba': 1624, 'aşağı': 20, 'yukarı': 4}
+Ortalama güven: 93.6%
+
+## bahadır_araba.csv
+Satır sayısı: 330112
+Tahmin sayısı: 2579
+Dağılım: {'araba': 2477, 'aşağı': 70, 'yukarı': 32}
+Ortalama güven: 93.5%
+
+
+# ÖZET
+İşlenen dosya: 12
+Toplam tahmin: 20531

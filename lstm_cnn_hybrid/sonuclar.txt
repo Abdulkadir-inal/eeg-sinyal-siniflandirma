@@ -1,0 +1,39 @@
+# LSTM+CNN FFT Tahmin Sonuçları
+# Model: Baseline (seq64)
+# Sequence Length: 64
+
+
+## apo_yukarı.csv
+Satır sayısı: 215744
+Tahmin sayısı: 422
+Dağılım: {'yukarı': 45, 'aşağı': 369, 'araba': 8}
+Ortalama güven: 89.4%
+
+## ırmak_yukarı.csv
+Satır sayısı: 170464
+Tahmin sayısı: 333
+Dağılım: {'aşağı': 242, 'yukarı': 58, 'araba': 33}
+Ortalama güven: 87.3%
+
+## canan_annane_yukarı.csv
+Satır sayısı: 182720
+Tahmin sayısı: 357
+Dağılım: {'aşağı': 284, 'yukarı': 29, 'araba': 44}
+Ortalama güven: 85.3%
+
+## bahadır_yukarı.csv
+Satır sayısı: 194240
+Tahmin sayısı: 380
+Dağılım: {'yukarı': 45, 'aşağı': 310, 'araba': 25}
+Ortalama güven: 87.5%
+
+## canan_yukarı.csv
+Satır sayısı: 260672
+Tahmin sayısı: 510
+Dağılım: {'aşağı': 395, 'yukarı': 78, 'araba': 37}
+Ortalama güven: 85.6%
+
+
+# ÖZET
+İşlenen dosya: 5
+Toplam tahmin: 2002

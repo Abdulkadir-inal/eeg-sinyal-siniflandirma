@@ -119,11 +119,24 @@ Bu sistem: ~2-4 Hz (saniyede 2-4 tahmin)
 Kullanım:
     1. ThinkGear Connector'ı başlatın
     2. MindWave'i bağlayın
-    3. Bu scripti çalıştırın:
+    3. Gerekli paketleri yükleyin:
+       pip install torch numpy scipy pynput
+    4. Bu scripti çalıştırın:
        python windows_realtime_fft.py
+    5. Model seçin (TCN önerilen: %95.70)
+    6. Kalibrasyon yapın (15 sn dinlenme durumu)
+    7. Tuşlarla kontrol edin:
+       - S: Tahmin başlat
+       - E: Tahmin durdur
+       - SPACE: Toggle (aç/kapat)
+       - Q: Programdan çık
 
 Gereksinimler:
-    pip install torch numpy scipy
+    pip install torch numpy scipy pynput
+
+Yeni Özellikler:
+    ✨ Kalibrasyon sistemi - Kişiye özel normalizasyon
+    ✨ Tuş kontrolü - İstediğiniz zaman tahmin başlatın/durdurun
 
 Özellikler:
     - Raw EEG'den kendi FFT hesaplama
@@ -141,6 +154,15 @@ import json
 import numpy as np
 from collections import deque
 from datetime import datetime
+
+# Tuş kontrolü
+try:
+    from pynput import keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    print("⚠️ pynput bulunamadı. Tuş kontrolü devre dışı.")
+    print("   Yüklemek için: pip install pynput")
 
 # SciPy (filtreleme için)
 try:
@@ -571,9 +593,18 @@ class WindowsFFTPredictor:
         # ThinkGear
         self.thinkgear = ThinkGearConnector()
         
-        # Scaler
+        # Scaler (eğitim verisi)
         self.scaler_mean = None
         self.scaler_std = None
+        
+        # Kalibrasyon (kullanıcıya özel)
+        self.calibration_mean = None
+        self.calibration_std = None
+        self.is_calibrated = False
+        
+        # Tuş kontrolü
+        self.recording = False  # Tahmin yapılsın mı?
+        self.should_quit = False
         
         # Stats
         self.predictions = {label: 0 for label in self.LABELS}
@@ -679,11 +710,22 @@ class WindowsFFTPredictor:
             return False
     
     def preprocess(self, fft_window_data):
-        """FFT verilerini normalize et"""
+        """FFT verilerini normalize et (kalibrasyonlu)"""
         x = np.array(fft_window_data, dtype=np.float32)
         
-        # Flatten ve normalize
-        if self.scaler_mean is not None and self.scaler_std is not None:
+        # Kalibrasyon uygula
+        if self.is_calibrated and self.calibration_mean is not None:
+            x_flat = x.flatten()
+            # Önce kullanıcının baseline'ını çıkar
+            x_flat = x_flat - self.calibration_mean
+            # Sonra eğitim scaler'ı ile normalize et
+            if self.scaler_mean is not None and len(x_flat) == len(self.scaler_mean):
+                x_normalized = x_flat / np.where(self.scaler_std > 0, self.scaler_std, 1)
+                x = x_normalized.reshape(x.shape)
+            else:
+                x = x_flat.reshape(x.shape)
+        elif self.scaler_mean is not None and self.scaler_std is not None:
+            # Kalibrasyon yoksa klasik normalize
             x_flat = x.flatten()
             if len(x_flat) == len(self.scaler_mean):
                 x_normalized = (x_flat - self.scaler_mean) / np.where(self.scaler_std > 0, self.scaler_std, 1)
@@ -716,6 +758,94 @@ class WindowsFFTPredictor:
             
             return self.LABELS[predicted.item()], confidence.item(), inference_time
     
+    def setup_keyboard_listener(self):
+        """Klavye dinleyicisini başlat"""
+        if not PYNPUT_AVAILABLE:
+            print("⚠️ pynput yüklü değil, tuş kontrolü devre dışı")
+            return
+        
+        def on_press(key):
+            try:
+                if hasattr(key, 'char') and key.char:
+                    if key.char.lower() == 's':
+                        self.recording = True
+                        print("\n🔴 TAHMİN BAŞLADI (S tuşu)")
+                    elif key.char.lower() == 'e':
+                        self.recording = False
+                        print("\n⏸️  TAHMİN DURAKLATILDI (E tuşu)")
+                    elif key.char.lower() == 'q':
+                        self.should_quit = True
+                        print("\n⛔ ÇIKIŞ (Q tuşu)")
+                        return False
+            except AttributeError:
+                # Space tuşu
+                if key == keyboard.Key.space:
+                    self.recording = not self.recording
+                    print(f"\n{'🔴 TAHMİN AKTİF' if self.recording else '⏸️  TAHMİN PASIF'} (SPACE)")
+        
+        listener = keyboard.Listener(on_press=on_press)
+        listener.start()
+        print("✅ Tuş kontrolü aktif: [S]tart, [E]nd, [SPACE]toggle, [Q]uit")
+    
+    def calibrate(self, duration=15):
+        """Kullanıcıya özel kalibrasyon"""
+        print("\n" + "=" * 60)
+        print("🎯 KALİBRASYON AŞAMASI")
+        print("=" * 60)
+        print(f"⏱️  {duration} saniye boyunca:")
+        print("   • Rahat oturun")
+        print("   • Gözlerinizi kapatın")
+        print("   • Hiçbir şey düşünmeyin (nötr durum)")
+        print("   • MindWave'in sinyali iyi olmalı")
+        print("-" * 60)
+        
+        input("Hazır olduğunuzda ENTER'a basın...")
+        
+        print("\n🔴 KALİBRASYON BAŞLADI...")
+        
+        calibration_data = []
+        start_time = time.time()
+        last_raw_count = 0
+        raw_samples_for_fft = 256
+        
+        while (time.time() - start_time) < duration:
+            result = self.thinkgear.read_data()
+            
+            if result == 'raw':
+                elapsed = time.time() - start_time
+                remaining = duration - elapsed
+                sig = "✅" if self.thinkgear.poor_signal < 50 else f"⚠️({self.thinkgear.poor_signal})"
+                print(f"\r⏳ Kalan: {remaining:.1f}s | Veri: {len(calibration_data)} | {sig}   ", end='')
+                
+                raw_buffer_size = self.thinkgear.get_buffer_size()
+                new_samples = self.thinkgear.raw_count - last_raw_count
+                
+                if raw_buffer_size >= self.fft_window and new_samples >= raw_samples_for_fft:
+                    last_raw_count = self.thinkgear.raw_count
+                    raw_samples = self.thinkgear.get_raw_samples(self.fft_window)
+                    band_powers = self.signal_processor.process_raw_to_fft(raw_samples)
+                    calibration_data.append([0] + band_powers)
+            
+            time.sleep(0.001)
+        
+        if len(calibration_data) < 10:
+            print("\n\n❌ Yeterli kalibrasyon verisi toplanamadı!")
+            print("   Sinyal kalitesini kontrol edin ve tekrar deneyin.")
+            return False
+        
+        # Kalibrasyon istatistikleri hesapla
+        cal_array = np.array(calibration_data, dtype=np.float32)
+        self.calibration_mean = np.mean(cal_array.flatten())
+        self.calibration_std = np.std(cal_array.flatten())
+        self.is_calibrated = True
+        
+        print("\n\n✅ KALİBRASYON TAMAMLANDI")
+        print(f"   📊 {len(calibration_data)} FFT frame toplandı")
+        print(f"   📈 Baseline: {self.calibration_mean:.2f} (std: {self.calibration_std:.2f})")
+        print("-" * 60)
+        
+        return True
+    
     def run(self):
         """Ana döngü"""
         print("\n" + "=" * 60)
@@ -735,6 +865,23 @@ class WindowsFFTPredictor:
         if not self.thinkgear.connect():
             return
         
+        # Kalibrasyon sor
+        print("\n" + "=" * 60)
+        do_calibration = input("Kalibrasyon yapmak ister misiniz? (y/n) [önerilen]: ").strip().lower()
+        
+        if do_calibration in ['y', 'yes', 'e', 'evet', '']:
+            if not self.calibrate():
+                return
+        else:
+            print("⚠️ Kalibrasyon atlandı - tahmin doğruluğu düşük olabilir")
+        
+        # Tuş kontrolünü başlat
+        if PYNPUT_AVAILABLE:
+            self.setup_keyboard_listener()
+        else:
+            print("⚠️ Tuş kontrolü yok - sürekli tahmin modu")
+            self.recording = True
+        
         print("\n" + "=" * 60)
         print(f"📊 Model: {self.model_name}")
         print(f"⚡ Cihaz: {self.device}")
@@ -742,8 +889,11 @@ class WindowsFFTPredictor:
         print(f"📦 FFT: {self.fft_window} sample (1 saniye)")
         print(f"📦 Model: {self.model_window} frame")
         print(f"⏱️ Tahmin: {1/self.prediction_interval:.1f} Hz")
+        print(f"🎚️  Kalibrasyon: {'✅ Aktif' if self.is_calibrated else '❌ Yok'}")
         print("=" * 60)
         print("\n💡 MindWave'i takın!")
+        if PYNPUT_AVAILABLE:
+            print("🎹 Tuşlar: [S]başla [E]dur [SPACE]toggle [Q]çık")
         print("⏸️  Durdurmak için Ctrl+C")
         print("-" * 60)
         
@@ -756,6 +906,10 @@ class WindowsFFTPredictor:
             prediction_started = False
             
             while True:
+                # Çıkış kontrolü
+                if self.should_quit:
+                    break
+                
                 result = self.thinkgear.read_data()
                 
                 if result == 'raw':
@@ -766,7 +920,8 @@ class WindowsFFTPredictor:
                         raw_count = self.thinkgear.get_buffer_size()
                         fft_count = len(self.fft_buffer)
                         sig = "✅" if self.thinkgear.poor_signal < 50 else f"⚠️({self.thinkgear.poor_signal})"
-                        print(f"\r📦 Raw: {raw_count}/{self.fft_window} | FFT: {fft_count}/{self.model_window} | {sig}   ", end='')
+                        rec_status = "🔴" if self.recording else "⏸️"
+                        print(f"\r{rec_status} Raw: {raw_count}/{self.fft_window} | FFT: {fft_count}/{self.model_window} | {sig}   ", end='')
                     
                     current_time = time.time()
                     
@@ -786,8 +941,8 @@ class WindowsFFTPredictor:
                         # FFT buffer'a ekle [Electrode=0, Delta, Theta, ...]
                         self.fft_buffer.append([0] + band_powers)
                     
-                    # Tahmin zamanı
-                    if len(self.fft_buffer) >= self.model_window and (current_time - last_prediction_time) >= self.prediction_interval:
+                    # Tahmin zamanı (sadece recording=True ise)
+                    if self.recording and len(self.fft_buffer) >= self.model_window and (current_time - last_prediction_time) >= self.prediction_interval:
                         last_prediction_time = current_time
                         prediction_started = True
                         

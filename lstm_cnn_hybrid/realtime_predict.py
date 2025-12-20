@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LSTM+CNN Hibrit Model - Canlı Tahmin (Raw EEG → FFT)
-====================================================
+LSTM+CNN Hibrit Model - Canlı/Dosya Tahmin
+==========================================
 
-Raw EEG sinyalinden FFT hesaplar (eğitimle aynı pipeline).
-MindWave'in kendi FFT'sini DEĞİL, bizim hesapladığımız FFT'yi kullanır.
+Üç Mod:
+    1. Canlı (Raw EEG → FFT → Model)
+    2. Canlı (ThinkGear Connector)
+    3. Dosya (FFT CSV → Model)
 
-Pipeline:
-    Raw EEG → Notch Filter (50Hz) → Bandpass (0.5-50Hz) → FFT → Model
+Dosya Modu:
+    FFT bant güçleri hesaplanmış CSV dosyalarını okur.
+    Sütunlar: delta, theta, lowAlpha, highAlpha, lowBeta, highBeta, lowGamma, midGamma
+    
+    Kullanım:
+        python realtime_predict.py --file data.csv --model seq64
+        python realtime_predict.py --file data.csv --model seq32 --output results.txt
+        python realtime_predict.py --file folder/ --model seq64  # Klasördeki tüm CSV'ler
 
-İki Bağlantı Modu:
-    1. Seri Port (Direkt bağlantı)
-    2. ThinkGear Connector (TCP/JSON - önerilen)
+Canlı Mod:
+    Raw EEG sinyalinden FFT hesaplar (eğitimle aynı pipeline).
+    MindWave'in kendi FFT'sini DEĞİL, bizim hesapladığımız FFT'yi kullanır.
+    
+    Pipeline: Raw EEG → Notch Filter (50Hz) → Bandpass (0.5-50Hz) → FFT → Model
+    
+    Kullanım:
+        python realtime_predict.py --port COM5
+        python realtime_predict.py --thinkgear --model seq96
 
 Model Seçenekleri:
+    --model seq32   : Hızlı tepki (sequence_length=32)
     --model seq64   : Baseline model (sequence_length=64)
     --model seq96   : Genişletilmiş görüş (sequence_length=96)
     --model seq128  : En geniş görüş (sequence_length=128)
-
-Kullanım:
-    # Seri port ile (Windows) - varsayılan model (seq64)
-    python realtime_predict.py --port COM5
-    
-    # seq96 modeli ile ThinkGear
-    python realtime_predict.py --thinkgear --model seq96
-    
-    # seq128 modeli ile seri port
-    python realtime_predict.py --port /dev/ttyUSB0 --model seq128
 """
 
 import os
@@ -43,6 +48,8 @@ import signal as sig
 
 import torch
 import torch.nn as nn
+import pandas as pd
+import glob
 
 # Sinyal işleme modülü
 from signal_processor import SignalProcessor, BAND_NAMES, SAMPLING_RATE, WINDOW_SIZE
@@ -554,6 +561,253 @@ class PredictionEngine:
             'total_samples': self.signal_processor.total_samples,
             'artifacts': self.signal_processor.artifact_count
         }
+    
+    def add_fft_row(self, fft_values):
+        """
+        Dışarıdan FFT değerlerini ekle (dosya modu için).
+        fft_values: 8 bant güçü (delta, theta, lowAlpha, highAlpha, lowBeta, highBeta, lowGamma, midGamma)
+        """
+        fft_dict = dict(zip(BAND_NAMES, fft_values))
+        self._add_fft_to_buffer(fft_dict)
+    
+    def predict_from_fft_sequence(self, fft_data, stride=1):
+        """
+        FFT veri serisinden tahmin yap (dosya modu için).
+        fft_data: numpy array shape (N, 8) - N satır, 8 bant
+        stride: kaç satırda bir tahmin yapılacak (varsayılan: 1)
+        Returns: list of (label, confidence, class_probs) tuples
+        """
+        # Buffer'ı temizle
+        self.feature_buffer.clear()
+        self.prediction_history.clear()
+        
+        results = []
+        seq_len = self.config['sequence_length']
+        last_pred_idx = -stride  # İlk tahmini hemen yapabilsin
+        
+        for i, row in enumerate(fft_data):
+            self.add_fft_row(row)
+            
+            # Yeterli veri biriktiğinde ve stride aralığında tahmin yap
+            if len(self.feature_buffer) >= seq_len and (i - last_pred_idx) >= stride:
+                label, conf, probs = self.predict()
+                results.append({
+                    'row': i + 1,
+                    'label': label,
+                    'confidence': conf,
+                    'probabilities': probs
+                })
+                last_pred_idx = i
+        
+        return results
+
+
+# ============================================================================
+# DOSYA MODU
+# ============================================================================
+
+# Desteklenen FFT sütun isimleri (farklı kaynaklardan gelen dosyalar için)
+FFT_COLUMN_VARIANTS = {
+    'delta': ['delta', 'Delta', 'DELTA'],
+    'theta': ['theta', 'Theta', 'THETA'],
+    'lowAlpha': ['lowAlpha', 'low_alpha', 'LowAlpha', 'LOW_ALPHA', 'lowalpha', 'Low Alpha'],
+    'highAlpha': ['highAlpha', 'high_alpha', 'HighAlpha', 'HIGH_ALPHA', 'highalpha', 'High Alpha'],
+    'lowBeta': ['lowBeta', 'low_beta', 'LowBeta', 'LOW_BETA', 'lowbeta', 'Low Beta'],
+    'highBeta': ['highBeta', 'high_beta', 'HighBeta', 'HIGH_BETA', 'highbeta', 'High Beta'],
+    'lowGamma': ['lowGamma', 'low_gamma', 'LowGamma', 'LOW_GAMMA', 'lowgamma', 'Low Gamma'],
+    'midGamma': ['midGamma', 'mid_gamma', 'MidGamma', 'MID_GAMMA', 'midgamma', 'Mid Gamma']
+}
+
+def find_fft_columns(df):
+    """DataFrame'deki FFT sütunlarını bul ve eşleştir"""
+    found_columns = {}
+    
+    for band, variants in FFT_COLUMN_VARIANTS.items():
+        for variant in variants:
+            if variant in df.columns:
+                found_columns[band] = variant
+                break
+    
+    return found_columns
+
+def load_fft_csv(file_path):
+    """FFT CSV dosyasını yükle ve 8 bant değerlerini döndür"""
+    df = pd.read_csv(file_path)
+    
+    # Sütunları bul
+    col_map = find_fft_columns(df)
+    
+    # Gerekli bantları kontrol et
+    required_bands = list(FFT_COLUMN_VARIANTS.keys())
+    missing = [b for b in required_bands if b not in col_map]
+    
+    if missing:
+        # Eğer sütunlar yoksa, indeks sıralı olabilir
+        if len(df.columns) >= 8:
+            # İlk 8 sütunu al (veya timestamp sonrası)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) >= 8:
+                print(f"   ⚠️ Bant isimleri bulunamadı, ilk 8 sayısal sütun kullanılıyor")
+                return df[numeric_cols[:8]].values
+        
+        raise ValueError(f"Eksik FFT bantları: {missing}")
+    
+    # Sıralı olarak al
+    data = df[[col_map[b] for b in required_bands]].values
+    return data
+
+def run_file_mode(args):
+    """FFT CSV dosyasından tahmin yap"""
+    
+    # Model bilgilerini al
+    model_info = AVAILABLE_MODELS[args.model]
+    model_path = os.path.join(SCRIPT_DIR, model_info['model'])
+    scaler_path = os.path.join(SCRIPT_DIR, model_info['scaler'])
+    config_path = os.path.join(SCRIPT_DIR, model_info['config'])
+    label_map_path = os.path.join(SCRIPT_DIR, model_info['label_map'])
+    
+    print("\n" + "=" * 60)
+    print("📂 DOSYA MODU - FFT CSV → Model")
+    print("=" * 60)
+    print(f"\n📦 Seçilen Model: {model_info['name']}")
+    print(f"   {model_info['description']}")
+    
+    # Dosya kontrolü
+    missing_files = []
+    for path, name in [(model_path, 'Model'), (scaler_path, 'Scaler'), 
+                       (config_path, 'Config'), (label_map_path, 'Label Map')]:
+        if not os.path.exists(path):
+            missing_files.append(f"{name}: {os.path.basename(path)}")
+    
+    if missing_files:
+        print(f"\n❌ Eksik model dosyaları:")
+        for f in missing_files:
+            print(f"   - {f}")
+        return
+    
+    # Engine oluştur
+    print("\n📦 Model yükleniyor...")
+    engine = PredictionEngine(model_path, scaler_path, config_path, label_map_path)
+    seq_len = engine.config['sequence_length']
+    
+    # Dosya/klasör yolu
+    input_path = args.file
+    files_to_process = []
+    
+    if os.path.isdir(input_path):
+        # Klasördeki tüm CSV'leri bul
+        pattern = os.path.join(input_path, '**', '*.csv')
+        files_to_process = glob.glob(pattern, recursive=True)
+        print(f"\n📁 Klasör: {input_path}")
+        print(f"   {len(files_to_process)} CSV dosyası bulundu")
+    elif os.path.isfile(input_path):
+        files_to_process = [input_path]
+    else:
+        print(f"\n❌ Dosya/klasör bulunamadı: {input_path}")
+        return
+    
+    if not files_to_process:
+        print("\n❌ İşlenecek CSV dosyası bulunamadı!")
+        return
+    
+    # Çıktı dosyası
+    output_file = None
+    if args.output:
+        output_file = open(args.output, 'w', encoding='utf-8')
+        output_file.write("# LSTM+CNN FFT Tahmin Sonuçları\n")
+        output_file.write(f"# Model: {model_info['name']}\n")
+        output_file.write(f"# Sequence Length: {seq_len}\n\n")
+    
+    # Her dosyayı işle
+    total_predictions = 0
+    all_results = {}
+    stride = args.stride
+    
+    print(f"   Stride: her {stride} satırda bir tahmin")
+    print("\n" + "-" * 60)
+    
+    for file_path in files_to_process:
+        file_name = os.path.basename(file_path)
+        print(f"\n📄 {file_name}")
+        
+        try:
+            # FFT verilerini yükle
+            fft_data = load_fft_csv(file_path)
+            print(f"   {len(fft_data)} satır yüklendi")
+            
+            if len(fft_data) < seq_len:
+                print(f"   ⚠️ Yetersiz veri! En az {seq_len} satır gerekli.")
+                continue
+            
+            # Tahmin yap (stride ile)
+            results = engine.predict_from_fft_sequence(fft_data, stride=stride)
+            total_predictions += len(results)
+            
+            # Özet istatistikler
+            if results:
+                # En sık tahmin
+                from collections import Counter
+                label_counts = Counter(r['label'] for r in results)
+                most_common = label_counts.most_common()
+                
+                # Ortalama güven
+                avg_conf = sum(r['confidence'] for r in results) / len(results)
+                
+                print(f"   ✅ {len(results)} tahmin yapıldı")
+                print(f"   📊 Dağılım: ", end='')
+                for label, count in most_common:
+                    pct = count / len(results) * 100
+                    print(f"{label}={pct:.1f}% ", end='')
+                print(f"\n   🎯 Ortalama güven: {avg_conf*100:.1f}%")
+                
+                # Detaylı çıktı
+                if args.verbose:
+                    print("\n   Detaylı tahminler:")
+                    for r in results[:10]:  # İlk 10
+                        print(f"      Satır {r['row']:4d}: {r['label']:10s} ({r['confidence']*100:.1f}%)")
+                    if len(results) > 10:
+                        print(f"      ... ve {len(results)-10} daha")
+                
+                # Dosyaya yaz
+                if output_file:
+                    output_file.write(f"\n## {file_name}\n")
+                    output_file.write(f"Satır sayısı: {len(fft_data)}\n")
+                    output_file.write(f"Tahmin sayısı: {len(results)}\n")
+                    output_file.write(f"Dağılım: {dict(label_counts)}\n")
+                    output_file.write(f"Ortalama güven: {avg_conf*100:.1f}%\n")
+                    
+                    if args.verbose:
+                        output_file.write("\nDetaylı tahminler:\n")
+                        for r in results:
+                            output_file.write(f"  {r['row']:4d}: {r['label']:10s} ({r['confidence']*100:.1f}%)\n")
+                
+                all_results[file_name] = {
+                    'predictions': results,
+                    'distribution': dict(label_counts),
+                    'avg_confidence': avg_conf
+                }
+            
+        except Exception as e:
+            print(f"   ❌ Hata: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+    
+    # Özet
+    print("\n" + "=" * 60)
+    print("📊 ÖZET")
+    print("=" * 60)
+    print(f"   İşlenen dosya: {len(files_to_process)}")
+    print(f"   Toplam tahmin: {total_predictions}")
+    
+    if output_file:
+        output_file.write(f"\n\n# ÖZET\n")
+        output_file.write(f"İşlenen dosya: {len(files_to_process)}\n")
+        output_file.write(f"Toplam tahmin: {total_predictions}\n")
+        output_file.close()
+        print(f"   💾 Sonuçlar kaydedildi: {args.output}")
+    
+    print()
 
 
 # ============================================================================
@@ -562,18 +816,20 @@ class PredictionEngine:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='LSTM+CNN Canlı Tahmin (Raw EEG → FFT)',
+        description='LSTM+CNN Canlı/Dosya Tahmin',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Kullanım Örnekleri:
-  # Varsayılan model (seq64) ile seri port
+  # Dosya modu - FFT CSV
+  python realtime_predict.py --file data.csv --model seq64
+  python realtime_predict.py --file folder/ --model seq32 -v
+  python realtime_predict.py --file data.csv --output results.txt
+  
+  # Canlı mod - seri port
   python realtime_predict.py --port COM5
   
-  # seq96 modeli ile ThinkGear
+  # Canlı mod - ThinkGear
   python realtime_predict.py --thinkgear --model seq96
-  
-  # seq128 modeli ile seri port
-  python realtime_predict.py --port /dev/ttyUSB0 --model seq128
   
   # Mevcut modelleri listele
   python realtime_predict.py --list-models
@@ -586,7 +842,15 @@ Kullanım Örnekleri:
     parser.add_argument('--list-models', action='store_true',
                        help='Mevcut modelleri listele ve çık')
     
-    # Bağlantı türü
+    # Dosya modu
+    parser.add_argument('--file', metavar='PATH',
+                       help='FFT CSV dosyası veya klasör (dosya modu)')
+    parser.add_argument('--output', '-o', metavar='FILE',
+                       help='Sonuçları kaydet (varsayılan: stdout)')
+    parser.add_argument('--stride', type=int, default=64,
+                       help='Dosya modunda kaç satırda bir tahmin (varsayılan: 64)')
+    
+    # Bağlantı türü (canlı mod)
     conn_group = parser.add_mutually_exclusive_group()
     conn_group.add_argument('--port', help='Seri port (örn: COM5 veya /dev/ttyUSB0)')
     conn_group.add_argument('--thinkgear', action='store_true', 
@@ -600,6 +864,8 @@ Kullanım Örnekleri:
     
     # Genel ayarlar
     parser.add_argument('--threshold', type=float, default=0.6, help='Güven eşiği (0-1)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Detaylı çıktı (dosya modu)')
     
     args = parser.parse_args()
     
@@ -617,9 +883,14 @@ Kullanım Örnekleri:
         print()
         return
     
-    # Bağlantı modu kontrolü
+    # Dosya modu mu?
+    if args.file:
+        run_file_mode(args)
+        return
+    
+    # Canlı mod: Bağlantı kontrolü
     if not args.port and not args.thinkgear:
-        parser.error("--port veya --thinkgear belirtmelisiniz. --list-models ile modelleri görebilirsiniz.")
+        parser.error("--port, --thinkgear veya --file belirtmelisiniz. --list-models ile modelleri görebilirsiniz.")
     
     # Model bilgilerini al
     model_info = AVAILABLE_MODELS[args.model]

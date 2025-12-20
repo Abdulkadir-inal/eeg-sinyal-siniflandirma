@@ -18,12 +18,17 @@ Yeni Özellikler:
     ✨ 8 Oran Formülü - Bantlar arası ilişkileri yakalar
     ✨ Kalibrasyon sistemi - Kişiye özel normalizasyon
     ✨ Tuş kontrolü - [S]tart [E]nd [SPACE]toggle [Q]uit
+    ✨ Direkt Bağlantı - ThinkGear Connector'a ihtiyaç yok!
+
+Bağlantı Seçenekleri:
+    1. ThinkGear Connector (Port 13854)
+    2. Direkt Seri Port (Bluetooth SPP) - DAHA KARARLI!
 
 Kullanım:
     python3 realtime_transformed.py
 
 Gereksinimler:
-    pip install torch numpy scipy pynput
+    pip install torch numpy scipy pynput pyserial
 """
 
 import os
@@ -44,6 +49,16 @@ except ImportError:
     PYNPUT_AVAILABLE = False
     print("⚠️ pynput bulunamadı. Tuş kontrolü devre dışı.")
     print("   Yüklemek için: pip install pynput")
+
+# Serial Port (direkt bağlantı için)
+try:
+    import serial
+    import serial.tools.list_ports
+    SERIAL_AVAILABLE = True
+except ImportError:
+    SERIAL_AVAILABLE = False
+    print("⚠️ pyserial bulunamadı. Direkt bağlantı devre dışı.")
+    print("   Yüklemek için: pip install pyserial")
 
 # SciPy (filtreleme için)
 try:
@@ -327,6 +342,220 @@ class TCN_Model(nn.Module):
 # THINKGEAR BAĞLANTISI
 # ============================================================================
 
+class DirectMindWaveConnector:
+    """MindWave'e direkt seri port üzerinden bağlanır (ThinkGear Connector gerekmez!)"""
+    
+    def __init__(self, port=None):
+        self.port = port
+        self.serial = None
+        self.buffer = bytearray()
+        
+        # Raw EEG buffer
+        self.raw_buffer = deque(maxlen=FFT_WINDOW_SIZE * 2)
+        
+        # Durum
+        self.poor_signal = 200
+        self.raw_count = 0
+    
+    @staticmethod
+    def list_ports():
+        """Kullanılabilir seri portları listele"""
+        if not SERIAL_AVAILABLE:
+            return []
+        
+        ports = []
+        for port in serial.tools.list_ports.comports():
+            # MindWave portlarını filtrele
+            if any(keyword in port.description.lower() for keyword in ['mindwave', 'neurosky', 'bluetooth', 'rfcomm', 'tty.']):
+                ports.append({
+                    'device': port.device,
+                    'description': port.description,
+                    'hwid': port.hwid
+                })
+        
+        return ports
+    
+    def connect(self):
+        """MindWave'e direkt bağlan"""
+        if not SERIAL_AVAILABLE:
+            print("❌ pyserial kurulu değil!")
+            print("   Kurulum: pip install pyserial")
+            return False
+        
+        try:
+            # Port otomatik seçimi
+            if self.port is None:
+                print("🔍 Kullanılabilir portlar aranıyor...")
+                ports = self.list_ports()
+                
+                if not ports:
+                    print("❌ MindWave portu bulunamadı!")
+                    print("\n💡 Çözüm:")
+                    print("   1. MindWave'i Bluetooth ile eşleştirin")
+                    print("   2. Cihazın 'Bağlı' durumda olduğundan emin olun")
+                    print("   3. Bu scripti tekrar çalıştırın")
+                    return False
+                
+                if len(ports) == 1:
+                    self.port = ports[0]['device']
+                    print(f"✅ Port bulundu: {self.port}")
+                    print(f"   {ports[0]['description']}")
+                else:
+                    print(f"\n📋 {len(ports)} port bulundu:")
+                    for i, port in enumerate(ports, 1):
+                        print(f"   {i}. {port['device']} - {port['description']}")
+                    
+                    choice = input(f"\nHangi portu kullanmak istersiniz? (1-{len(ports)}): ").strip()
+                    try:
+                        idx = int(choice) - 1
+                        self.port = ports[idx]['device']
+                    except (ValueError, IndexError):
+                        print("❌ Geçersiz seçim!")
+                        return False
+            
+            # Serial bağlantı aç
+            print(f"\n🔵 MindWave'e bağlanılıyor: {self.port}")
+            self.serial = serial.Serial(
+                port=self.port,
+                baudrate=57600,  # MindWave standart baud rate
+                timeout=0.1,     # 100ms timeout
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE
+            )
+            
+            # Buffer temizle
+            time.sleep(0.5)
+            self.serial.reset_input_buffer()
+            
+            print("✅ Bağlantı başarılı!")
+            print("📡 Raw EEG çıktısı: AKTİF (512 Hz)")
+            print("🎉 ThinkGear Connector gerekmedi!")
+            return True
+            
+        except serial.SerialException as e:
+            print(f"❌ Bağlantı hatası: {e}")
+            print("\n💡 Olası Çözümler:")
+            print("   • Port başka bir uygulama tarafından kullanılıyor olabilir")
+            print("   • MindWave'in Bluetooth bağlantısını kontrol edin")
+            print("   • Cihazı kapatıp tekrar açın")
+            return False
+        except Exception as e:
+            print(f"❌ Beklenmeyen hata: {e}")
+            return False
+    
+    def disconnect(self):
+        """Bağlantıyı kapat"""
+        if self.serial and self.serial.is_open:
+            try:
+                self.serial.close()
+            except:
+                pass
+        print("🔌 Bağlantı kapatıldı")
+    
+    def _parse_packet(self):
+        """ThinkGear paketini parse et"""
+        while len(self.buffer) >= 4:
+            # Sync bytes ara (0xAA 0xAA)
+            if self.buffer[0] != 0xAA or self.buffer[1] != 0xAA:
+                self.buffer.pop(0)
+                continue
+            
+            # Packet uzunluğu
+            plength = self.buffer[2]
+            
+            # Tam paket gelene kadar bekle
+            if len(self.buffer) < plength + 4:  # AA AA LEN [DATA...] CKSUM
+                break
+            
+            # Checksum kontrolü
+            payload = self.buffer[3:3+plength]
+            checksum = self.buffer[3+plength]
+            
+            calc_sum = sum(payload) & 0xFF
+            calc_sum = (~calc_sum) & 0xFF
+            
+            if checksum != calc_sum:
+                # Checksum hatası, ilk byte'ı at ve devam et
+                self.buffer.pop(0)
+                continue
+            
+            # Payload'ı parse et
+            i = 0
+            while i < len(payload):
+                code = payload[i]
+                i += 1
+                
+                # Extended code level check
+                while code == 0x55 and i < len(payload):
+                    code = payload[i]
+                    i += 1
+                
+                # Value uzunluğu
+                if code >= 0x80:
+                    if i >= len(payload):
+                        break
+                    vlength = payload[i]
+                    i += 1
+                else:
+                    vlength = 1
+                
+                # Value oku
+                if i + vlength > len(payload):
+                    break
+                
+                value = payload[i:i+vlength]
+                i += vlength
+                
+                # Raw EEG (0x80, 2 bytes)
+                if code == 0x80 and len(value) == 2:
+                    raw_value = int.from_bytes(value, byteorder='big', signed=True)
+                    self.raw_buffer.append(raw_value)
+                    self.raw_count += 1
+                
+                # Poor Signal Quality (0x02, 1 byte)
+                elif code == 0x02 and len(value) == 1:
+                    self.poor_signal = value[0]
+            
+            # İşlenen paketi buffer'dan kaldır
+            del self.buffer[:3+plength+1]
+    
+    def read_data(self):
+        """Serial porttan veri oku"""
+        if not self.serial or not self.serial.is_open:
+            return None
+        
+        try:
+            # Mevcut veriyi oku
+            if self.serial.in_waiting > 0:
+                data = self.serial.read(self.serial.in_waiting)
+                self.buffer.extend(data)
+            
+            # Buffer'daki paketleri parse et
+            old_count = self.raw_count
+            self._parse_packet()
+            
+            # Yeni raw veri geldi mi?
+            if self.raw_count > old_count:
+                return 'raw'
+            
+            return None
+            
+        except serial.SerialException:
+            return None
+        except Exception:
+            return None
+    
+    def get_raw_samples(self, n_samples):
+        """Son n sample'ı al"""
+        if len(self.raw_buffer) < n_samples:
+            return None
+        return list(self.raw_buffer)[-n_samples:]
+    
+    def get_buffer_size(self):
+        return len(self.raw_buffer)
+
+
 class ThinkGearConnector:
     """ThinkGear Connector'a doğrudan bağlanır ve Raw EEG okur"""
     
@@ -445,10 +674,12 @@ class RealtimeTransformedPredictor:
     
     CONFIDENCE_THRESHOLD = 0.70
     
-    def __init__(self, model_window=MODEL_WINDOW, fft_window=FFT_WINDOW_SIZE, prediction_interval=0.25):
+    def __init__(self, model_window=MODEL_WINDOW, fft_window=FFT_WINDOW_SIZE, prediction_interval=0.25, use_direct_connection=False, use_3person_model=False):
         self.model_window = model_window
         self.fft_window = fft_window
         self.prediction_interval = prediction_interval
+        self.use_direct_connection = use_direct_connection
+        self.use_3person_model = use_3person_model
         
         # Device
         self.device = DEVICE
@@ -460,8 +691,11 @@ class RealtimeTransformedPredictor:
         # FFT buffer (9 özellik: Electrode + 8 bant)
         self.fft_buffer = deque(maxlen=model_window)
         
-        # ThinkGear
-        self.thinkgear = ThinkGearConnector()
+        # MindWave bağlantısı (direkt veya ThinkGear Connector)
+        if use_direct_connection:
+            self.thinkgear = DirectMindWaveConnector()
+        else:
+            self.thinkgear = ThinkGearConnector()
         
         # Scaler (eğitim verisi)
         self.scaler = None
@@ -484,17 +718,31 @@ class RealtimeTransformedPredictor:
         """Model ve scaler'ı yükle"""
         print("\n📂 Model yükleniyor...")
         
+        # Model dizini ve dosya adlarını belirle
+        if self.use_3person_model:
+            model_dir = os.path.join(MODEL_DIR, '3person_model')
+            scaler_name = 'scaler_3person.pkl'
+            model_name = 'best_model_3person.pth'
+            accuracy = '%99.35'
+            model_desc = '(3 Kişi: Apo, Bahadır, Canan)'
+        else:
+            model_dir = MODEL_DIR
+            scaler_name = 'scaler_transformed.pkl'
+            model_name = 'best_model_transformed.pth'
+            accuracy = '%99.43'
+            model_desc = '(Tüm Veri)'
+        
         # Scaler yükle
-        scaler_path = os.path.join(MODEL_DIR, 'scaler_transformed.pkl')
+        scaler_path = os.path.join(model_dir, scaler_name)
         if os.path.exists(scaler_path):
             with open(scaler_path, 'rb') as f:
                 self.scaler = pickle.load(f)
-            print(f"   ✅ Scaler yüklendi")
+            print(f"   ✅ Scaler yüklendi {model_desc}")
         else:
             print(f"   ⚠️ Scaler bulunamadı: {scaler_path}")
         
         # Model yükle
-        model_path = os.path.join(MODEL_DIR, 'best_model_transformed.pth')
+        model_path = os.path.join(model_dir, model_name)
         if not os.path.exists(model_path):
             print(f"   ❌ Model bulunamadı: {model_path}")
             return False
@@ -505,7 +753,7 @@ class RealtimeTransformedPredictor:
             self.model.load_state_dict(state_dict)
             self.model.eval()
             
-            print(f"   ✅ TCN Model yüklendi (%99.43 accuracy)")
+            print(f"   ✅ TCN Model yüklendi {accuracy} {model_desc}")
             print(f"   ⚡ Cihaz: {self.device}")
             
             if self.device.type == 'cuda':
@@ -656,9 +904,12 @@ class RealtimeTransformedPredictor:
     
     def run(self):
         """Ana döngü"""
+        accuracy = "%99.35" if self.use_3person_model else "%99.43"
+        model_desc = "(3 Kişi)" if self.use_3person_model else "(Tüm Veri)"
+        
         print("\n" + "=" * 60)
         print("🧠 LOG TRANSFORM + ORAN FORMÜLLERİ")
-        print("   Gerçek Zamanlı EEG Tahmin (%99.43 accuracy)")
+        print(f"   Gerçek Zamanlı EEG Tahmin {accuracy} {model_desc}")
         print("=" * 60)
         
         # Model yükle
@@ -686,8 +937,11 @@ class RealtimeTransformedPredictor:
         else:
             self.recording = True
         
+        accuracy = "%99.35" if self.use_3person_model else "%99.43"
+        model_desc = "(3 Kişi: Apo, Bahadır, Canan)" if self.use_3person_model else "(Tüm Veri)"
+        
         print("\n" + "=" * 60)
-        print(f"📊 Model: TCN (%99.43 accuracy)")
+        print(f"📊 Model: TCN {accuracy} {model_desc}")
         print(f"🔧 Özellik: 17 (9 FFT + 8 Oran)")
         print(f"⚡ Cihaz: {self.device}")
         print(f"🎯 Sınıflar: {', '.join(LABELS)}")
@@ -821,21 +1075,81 @@ def main():
     print(f"📱 Device: {DEVICE}")
     print(f"📂 Model: {MODEL_DIR}")
     
-    print("\n📋 Seçenekler:")
-    print("   1. Canlı Tahmin (ThinkGear Connector gerekli)")
-    print("   2. Demo Modu (rastgele veri ile test)")
-    print("   3. Çıkış")
+    print("\n📋 Bağlantı Türü:")
+    print("   1. 🔌 Direkt Bağlantı (Seri Port - ÖNERİLEN!)")
+    print("   2. 🌐 ThinkGear Connector (Port 13854)")
+    print("   3. 🧪 Demo Modu (rastgele veri ile test)")
+    print("   4. ❌ Çıkış")
+    
+    print("\n💡 İpucu:")
+    print("   • Direkt Bağlantı daha kararlı ve kolay!")
+    print("   • ThinkGear Connector gerekmez")
+    print("   • Sadece Bluetooth eşleştirmesi yeterli")
+    
+    if SERIAL_AVAILABLE:
+        print("   ✅ pyserial yüklü - Direkt bağlantı kullanılabilir")
+    else:
+        print("   ⚠️ pyserial yok - Sadece ThinkGear Connector kullanılabilir")
+        print("      Yüklemek için: pip install pyserial")
     
     try:
-        choice = input("\nSeçiminiz (1/2/3): ").strip()
+        choice = input("\nBağlantı türü seçin (1/2/3/4): ").strip()
         
-        if choice == "1":
-            predictor = RealtimeTransformedPredictor()
-            predictor.run()
-        elif choice == "2":
-            demo_mode()
-        else:
+        if choice == "4":
             print("Çıkış...")
+            return
+        elif choice == "3":
+            demo_mode()
+            return
+        
+        # Bağlantı türü belirlendi, şimdi model seçimi
+        use_direct = (choice == "1")
+        
+        if choice == "1" and not SERIAL_AVAILABLE:
+            print("\n❌ pyserial kurulu değil!")
+            print("   Kurulum: pip install pyserial")
+            return
+        
+        # Model seçimi
+        print("\n" + "=" * 60)
+        print("📊 MODEL SEÇİMİ")
+        print("=" * 60)
+        print("   1. 📈 Tüm Veri Modeli (%99.43 accuracy)")
+        print("      • Tüm katılımcılar dahil")
+        print("      • 20,207 window ile eğitildi")
+        print("")
+        print("   2. 👥 3 Kişi Modeli (%99.35 accuracy)")
+        print("      • Sadece: Apo, Bahadır, Canan")
+        print("      • 13,144 window ile eğitildi")
+        print("      • Daha spesifik tahmin")
+        
+        model_choice = input("\nModel seçin (1/2): ").strip()
+        use_3person = (model_choice == "2")
+        
+        # Bağlantı türüne göre mesaj
+        if choice == "1":
+            print("\n🔌 DİREKT BAĞLANTI MODU")
+            print("=" * 60)
+            print("✨ ThinkGear Connector gerekmez!")
+            print("🎯 Sadece MindWave'i Bluetooth ile eşleştirin")
+        else:
+            print("\n🌐 THINKGEAR CONNECTOR MODU")
+            print("=" * 60)
+            print("⚠️ ThinkGear Connector uygulaması çalışıyor olmalı")
+            print("📡 Port 13854 dinleniyor...")
+        
+        # Model bilgisi
+        if use_3person:
+            print("👥 Model: 3 Kişi (Apo, Bahadır, Canan) - %99.35")
+        else:
+            print("📈 Model: Tüm Veri - %99.43")
+        print("-" * 60)
+        
+        predictor = RealtimeTransformedPredictor(
+            use_direct_connection=use_direct,
+            use_3person_model=use_3person
+        )
+        predictor.run()
             
     except KeyboardInterrupt:
         print("\n\nÇıkış...")
