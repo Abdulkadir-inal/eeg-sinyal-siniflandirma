@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LSTM+CNN Hibrit Model - GUI ile Canlı Tahmin (Raw EEG → FFT)
-============================================================
+LSTM+CNN Hibrit Model - GUI ile Canlı/Dosya Tahmin
+===================================================
 
 Raw EEG sinyalinden FFT hesaplar (eğitimle aynı pipeline).
 MindWave'in kendi FFT'sini DEĞİL, bizim hesapladığımız FFT'yi kullanır.
@@ -11,15 +11,17 @@ Pipeline:
     Raw EEG → Notch (50Hz) → Bandpass (0.5-50Hz) → FFT → Model
 
 Model Seçenekleri:
-    --model seq64   : Baseline model (sequence_length=64)
-    --model seq96   : Genişletilmiş görüş (sequence_length=96)
-    --model seq128  : En geniş görüş (sequence_length=128)
+    --model seq32   : Hızlı (sequence_length=32, ~4s gecikme)
+    --model seq64   : Baseline (sequence_length=64)
+    --model seq96   : Genişletilmiş (sequence_length=96)
+    --model seq128  : En geniş (sequence_length=128)
 
 Kullanım:
-    python realtime_gui.py --simulation        (Test için - varsayılan seq64)
-    python realtime_gui.py --simulation --model seq96   (seq96 ile test)
-    python realtime_gui.py --port COM5         (Seri port)
-    python realtime_gui.py --thinkgear --model seq96    (ThinkGear + seq96)
+    python realtime_gui.py --simulation                (Test, seq64)
+    python realtime_gui.py --simulation --model seq96  (Test, seq96)
+    python realtime_gui.py --port COM5 --model seq32   (Seri port, seq32)
+    python realtime_gui.py --thinkgear --model seq64   (ThinkGear)
+    python realtime_gui.py --file data.csv             (CSV dosya)
 """
 
 import os
@@ -59,7 +61,6 @@ COLORS = {
     'panel': '#16213e',
     'text': 'white',
     'yukarı': '#00ff88',
-    'aşağı': '#ff6b6b',
     'asagı': '#ff6b6b',
     'araba': '#feca57'
 }
@@ -364,9 +365,9 @@ class PredictionEngine:
 # ============================================================================
 
 class RealtimeGUI:
-    def __init__(self, root, use_simulation=False, port=None, use_thinkgear=False, model_name='seq64'):
+    def __init__(self, root, use_simulation=False, port=None, use_thinkgear=False, model_name='seq64', file_path=None):
         self.root = root
-        self.root.title("🧠 LSTM+CNN Canlı Tahmin (Raw → FFT)")
+        self.root.title("🧠 LSTM+CNN Canlı/Dosya Tahmin (Raw EEG / FFT CSV)")
         self.root.geometry("1200x800")
         self.root.configure(bg=COLORS['bg'])
         
@@ -374,6 +375,7 @@ class RealtimeGUI:
         self.use_thinkgear = use_thinkgear
         self.port = port
         self.model_name = model_name  # Seçilen model
+        self.file_path = file_path  # CSV dosya yolu (opsiyonel)
         self.running = False
         self.monitoring = False  # Sinyal izleme modu
         self.connector = None
@@ -754,14 +756,16 @@ class RealtimeGUI:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='LSTM+CNN GUI (Raw → FFT)',
+        description='LSTM+CNN GUI (Raw EEG / FFT CSV)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Kullanım Örnekleri:
-  python realtime_gui.py --simulation                 # Test için simülasyon (seq64)
-  python realtime_gui.py --simulation --model seq96   # seq96 ile simülasyon
+  python realtime_gui.py --simulation                 # Test (seq64)
+  python realtime_gui.py --simulation --model seq32   # Test (seq32)
   python realtime_gui.py --thinkgear --model seq96    # ThinkGear + seq96
   python realtime_gui.py --port COM5 --model seq128   # Seri port + seq128
+  python realtime_gui.py --file data.csv              # CSV dosya + seq64
+  python realtime_gui.py --file data.csv --model seq96  # CSV dosya + seq96
   
   python realtime_gui.py --list-models                # Mevcut modelleri listele
         """
@@ -777,6 +781,7 @@ Kullanım Örnekleri:
     parser.add_argument('--simulation', action='store_true', help='Simülasyon modu')
     parser.add_argument('--thinkgear', action='store_true', help='ThinkGear Connector kullan')
     parser.add_argument('--port', default='COM5', help='COM port (seri port modu için)')
+    parser.add_argument('--file', help='FFT CSV dosyası yükle (file modu için)')
     args = parser.parse_args()
     
     # Model listesi göster
@@ -794,7 +799,8 @@ Kullanım Örnekleri:
     
     root = tk.Tk()
     app = RealtimeGUI(root, use_simulation=args.simulation, port=args.port, 
-                      use_thinkgear=args.thinkgear, model_name=args.model)
+                      use_thinkgear=args.thinkgear, model_name=args.model, 
+                      file_path=args.file)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
