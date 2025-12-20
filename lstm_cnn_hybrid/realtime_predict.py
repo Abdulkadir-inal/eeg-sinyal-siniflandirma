@@ -50,6 +50,7 @@ import torch
 import torch.nn as nn
 import pandas as pd
 import glob
+import serial  # Arduino servo control için
 
 # Sinyal işleme modülü
 from signal_processor import SignalProcessor, BAND_NAMES, SAMPLING_RATE, WINDOW_SIZE
@@ -814,6 +815,81 @@ def run_file_mode(args):
 # ANA UYGULAMA
 # ============================================================================
 
+# ============================================================================
+# ARDUINO SERVO CONTROLLER
+# ============================================================================
+
+class ArduinoController:
+    """
+    Arduino ile servo motor kontrolü.
+    Tahmin sonucuna göre servo pozisyonunu değiştirir.
+    
+    Komutlar:
+        b'Y' -> yukarı (servo yukarı pozisyon)
+        b'A' -> aşağı (servo aşağı pozisyon)  
+        b'R' -> araba (servo orta pozisyon)
+    """
+    
+    def __init__(self, port, baud_rate=9600):
+        self.port = port
+        self.baud_rate = baud_rate
+        self.serial_conn = None
+        self.connected = False
+    
+    def connect(self):
+        """Arduino'ya seri port bağlantısı kur"""
+        try:
+            self.serial_conn = serial.Serial(self.port, self.baud_rate, timeout=1)
+            time.sleep(2)  # Arduino reset için bekle
+            self.connected = True
+            print(f"✅ Arduino bağlandı: {self.port} @ {self.baud_rate} baud")
+            return True
+        except serial.SerialException as e:
+            print(f"❌ Arduino bağlantı hatası: {e}")
+            self.connected = False
+            return False
+        except Exception as e:
+            print(f"❌ Arduino hatası: {e}")
+            self.connected = False
+            return False
+    
+    def send_command(self, label):
+        """
+        Tahmin etiketine göre Arduino'ya komut gönder.
+        
+        Args:
+            label: Tahmin etiketi ('yukarı', 'aşağı', 'asagı', 'araba')
+        """
+        if not self.connected or self.serial_conn is None:
+            return False
+        
+        try:
+            if 'yukarı' in label.lower() or 'yukari' in label.lower():
+                self.serial_conn.write(b'Y')
+                return True
+            elif 'aşağı' in label.lower() or 'asagı' in label.lower() or 'asagi' in label.lower():
+                self.serial_conn.write(b'A')
+                return True
+            elif 'araba' in label.lower():
+                self.serial_conn.write(b'R')
+                return True
+            else:
+                return False
+        except serial.SerialException as e:
+            print(f"❌ Arduino yazma hatası: {e}")
+            return False
+    
+    def close(self):
+        """Seri port bağlantısını kapat"""
+        if self.serial_conn is not None:
+            try:
+                self.serial_conn.close()
+                print("✅ Arduino bağlantısı kapatıldı")
+            except:
+                pass
+        self.connected = False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='LSTM+CNN Canlı/Dosya Tahmin',
@@ -866,6 +942,10 @@ Kullanım Örnekleri:
     parser.add_argument('--threshold', type=float, default=0.6, help='Güven eşiği (0-1)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Detaylı çıktı (dosya modu)')
+    
+    # Arduino servo kontrolü
+    parser.add_argument('--arduino', metavar='PORT',
+                       help='Arduino seri port (örn: COM3, /dev/ttyACM0). Belirtilmezse servo kontrolü devre dışı.')
     
     args = parser.parse_args()
     
@@ -924,6 +1004,15 @@ Kullanım Örnekleri:
     # Engine oluştur
     print("\n📦 Model yükleniyor...")
     engine = PredictionEngine(model_path, scaler_path, config_path, label_map_path)
+    
+    # Arduino kontrolcü oluştur (opsiyonel)
+    arduino_controller = None
+    if args.arduino:
+        print(f"\n🤖 Arduino servo kontrolü: {args.arduino}")
+        arduino_controller = ArduinoController(args.arduino)
+        if not arduino_controller.connect():
+            print("⚠️  Arduino bağlanamadı, servo kontrolü devre dışı")
+            arduino_controller = None
     
     # =====================================================================
     # AŞAMA 1: Bağlantı için kullanıcı komutu bekle
@@ -1114,6 +1203,11 @@ Kullanım Örnekleri:
                         color = {'yukarı': '\033[92m', 'aşağı': '\033[91m', 'araba': '\033[93m', 'asagı': '\033[91m'}
                         c = color.get(label, '\033[0m')
                         print(f"\n{c}🎯 Tahmin: {label:10s} | Güven: {confidence*100:.1f}%\033[0m")
+                        
+                        # Arduino servo kontrolü
+                        if arduino_controller is not None:
+                            if arduino_controller.send_command(label):
+                                print(f"   🤖 Arduino: {label} komutu gönderildi")
                     else:
                         print(f"\n⏳ Belirsiz... | Güven: {confidence*100:.1f}%")
             
@@ -1126,6 +1220,11 @@ Kullanım Örnekleri:
             break
     
     connector.disconnect()
+    
+    # Arduino bağlantısını kapat
+    if arduino_controller is not None:
+        arduino_controller.close()
+    
     print("\n✅ Program sonlandı.")
 
 
