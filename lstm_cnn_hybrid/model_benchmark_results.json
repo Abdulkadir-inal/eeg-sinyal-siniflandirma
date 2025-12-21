@@ -1,0 +1,37 @@
+{
+  "comparison_date": "2025-12-21",
+  "models": {
+    "CNN-LSTM (Mevcut)": {
+      "accuracy_percent": 98.29,
+      "f1_score": 0.98,
+      "latency_ms": 64,
+      "complexity": "Orta",
+      "parameters": "~450K",
+      "recommended": true
+    },
+    "Transformer": {
+      "accuracy_percent": 96.5,
+      "f1_score": 0.96,
+      "latency_ms": 150,
+      "complexity": "Yüksek",
+      "parameters": "~850K",
+      "recommended": false
+    },
+    "TCN (Temporal Conv)": {
+      "accuracy_percent": 94.8,
+      "f1_score": 0.94,
+      "latency_ms": 25,
+      "complexity": "Düşük",
+      "parameters": "~200K",
+      "recommended": false
+    },
+    "EEGNet": {
+      "accuracy_percent": 92.1,
+      "f1_score": 0.91,
+      "latency_ms": 15,
+      "complexity": "Düşük",
+      "parameters": "~4K",
+      "recommended": false
+    }
+  }
+}
